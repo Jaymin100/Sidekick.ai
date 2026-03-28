@@ -19,6 +19,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let mediaRecorder = null;
   let audioChunks = [];
+  let uploadPromise = null;
+  let recognitionEndResolve = null;
 
   // ===== SPEECH RECOGNITION =====
   const recognition = new webkitSpeechRecognition();
@@ -39,7 +41,7 @@ document.addEventListener("DOMContentLoaded", () => {
       
       if (event.results[i].isFinal) {
         console.log("[SPEECH] FINAL result:", transcriptSegment);
-        transcript += transcriptSegment;
+        transcript = transcriptSegment; // Keep latest final result
       } else {
         console.log("[SPEECH] INTERIM result:", transcriptSegment);
         interimTranscript += transcriptSegment;
@@ -55,6 +57,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   recognition.onend = () => {
     console.log("[SPEECH] Recognition ended");
+    if (recognitionEndResolve) {
+      recognitionEndResolve();
+      recognitionEndResolve = null;
+    }
   };
 
   // ===== RECORDING =====
@@ -73,7 +79,7 @@ document.addEventListener("DOMContentLoaded", () => {
       audioChunks.push(e.data);
     };
 
-    mediaRecorder.onstop = () => {
+    mediaRecorder.onstop = async () => {
       if (!shouldSaveRecording) {
         console.log("[RECORD] Recording discarded");
         audioChunks = [];
@@ -84,12 +90,32 @@ document.addEventListener("DOMContentLoaded", () => {
 
       console.log("[RECORD] Audio ready:", audioBlob);
 
-      // Download locally
-      const url = URL.createObjectURL(audioBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "recording.webm";
-      a.click();
+      // Upload to backend
+      uploadPromise = (async () => {
+        try {
+          const formData = new FormData();
+          formData.append("file", audioBlob, "recording.webm");
+
+          console.log("[RECORD] Uploading audio to backend...");
+          const uploadRes = await fetch("http://10.101.16.249:5001/audio/upload", {
+            method: "POST",
+            body: formData
+          });
+
+          if (!uploadRes.ok) {
+            const errorText = await uploadRes.text();
+            console.error("[RECORD] Upload error:", errorText);
+            throw new Error(`Upload failed: ${uploadRes.status}`);
+          }
+
+          const uploadData = await uploadRes.json();
+          console.log("[RECORD] Upload successful:", uploadData);
+          return uploadData;
+
+        } catch (err) {
+          console.error("[RECORD] Upload error:", err.message);
+        }
+      })();
     };
 
     mediaRecorder.start();
@@ -123,7 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
     statusText.textContent = "Listening... Speak now";
     setListening();
   };
-// hi
+
   // ===== CANCEL =====
   cancelBtn.onclick = () => {
     console.log("[CANCEL BTN] Clicked");
@@ -154,11 +180,22 @@ document.addEventListener("DOMContentLoaded", () => {
     isListening = false;
     stopRecording();
 
-    console.log("[SEND BTN] Transcript captured:", transcript);
+    // Wait for speech recognition to actually complete
+    await new Promise(resolve => {
+      recognitionEndResolve = resolve;
+    });
+
+    console.log("[SEND BTN] FINAL Transcript:", transcript);
 
     setProcessing();
 
     try {
+      // Wait for audio upload to comp  lete
+      if (uploadPromise) {
+        const uploadData = await uploadPromise;
+        console.log("[SEND] Audio uploaded:", uploadData);
+      }
+
       const payload = {
         userIntent: transcript,
         url: window.location.href,
@@ -167,8 +204,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       console.log("[SEND] Payload:", payload);
 
-      console.log("[SEND] Connecting to localhost:3000...");
-      const res = await fetch("http://localhost:3000/api/v1/tasks/generate", {
+      console.log("[SEND] Connecting to backend...");
+      const res = await fetch("http://10.101.16.249:5001/api/v1/tasks/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -191,6 +228,20 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error("[SEND] CATCH ERROR:", err.message);
       console.error("[SEND] Full error:", err);
       statusText.textContent = "Error processing request";
+    }
+  };
+
+  // ===== NEXT BUTTON =====
+  const nextBtn = document.getElementById("nextBtn");
+
+  nextBtn.onclick = () => {
+    currentStep++;
+
+    if (currentStep < steps.length) {
+      showStep();
+    } else {
+      statusText.textContent = "✅ Task completed";
+      onboardingDiv.style.display = "none";
     }
   };
 
