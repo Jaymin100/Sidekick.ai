@@ -7,35 +7,128 @@ document.addEventListener("DOMContentLoaded", () => {
   const listeningControls = document.getElementById("listeningControls");
 
   const statusText = document.getElementById("status");
-
   const onboardingDiv = document.getElementById("onboarding");
   const stepInfo = document.getElementById("stepInfo");
 
   // ===== STATE =====
-  let isListening = false;
   let steps = [];
   let currentStep = 0;
   let transcript = "";
+  let isListening = false;
+  let shouldSaveRecording = true;
 
-  // ===== 🎤 SPEECH RECOGNITION =====
+  let mediaRecorder = null;
+  let audioChunks = [];
+
+  // ===== SPEECH RECOGNITION =====
   const recognition = new webkitSpeechRecognition();
   recognition.lang = "en-US";
+  recognition.continuous = true;
+  recognition.interimResults = true;
 
-  // ===== ▶️ START SPEAKING =====
-  startBtn.onclick = () => {
+  recognition.onstart = () => {
+    console.log("[SPEECH] Recognition started");
+  };
+
+  recognition.onresult = (event) => {
+    console.log("[SPEECH] onresult fired - event:", event);
+    let interimTranscript = "";
+    
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcriptSegment = event.results[i][0].transcript;
+      
+      if (event.results[i].isFinal) {
+        console.log("[SPEECH] FINAL result:", transcriptSegment);
+        transcript += transcriptSegment;
+      } else {
+        console.log("[SPEECH] INTERIM result:", transcriptSegment);
+        interimTranscript += transcriptSegment;
+      }
+    }
+    
+    console.log("[SPEECH] Current transcript:", transcript);
+  };
+
+  recognition.onerror = (event) => {
+    console.error("[SPEECH] Error:", event.error);
+  };
+
+  recognition.onend = () => {
+    console.log("[SPEECH] Recognition ended");
+  };
+
+  // ===== RECORDING =====
+  async function startRecording() {
+    console.log("[RECORD] startRecording() called");
+    transcript = ""; // Reset transcript
+    shouldSaveRecording = true;
+    
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    console.log("[RECORD] Microphone access granted");
+
+    mediaRecorder = new MediaRecorder(stream);
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = (e) => {
+      audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      if (!shouldSaveRecording) {
+        console.log("[RECORD] Recording discarded");
+        audioChunks = [];
+        return;
+      }
+
+      const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+
+      console.log("[RECORD] Audio ready:", audioBlob);
+
+      // Download locally
+      const url = URL.createObjectURL(audioBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "recording.webm";
+      a.click();
+    };
+
+    mediaRecorder.start();
+    console.log("[RECORD] MediaRecorder started");
+    
+    console.log("[RECORD] Starting speech recognition...");
     recognition.start();
-    isListening = true;
+    console.log("[RECORD] Speech recognition.start() called");
+  }
+
+  function stopRecording() {
+    console.log("[STOP] stopRecording() called");
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+      console.log("[STOP] MediaRecorder stopped");
+    }
+    console.log("[STOP] Stopping speech recognition...");
+    recognition.stop();
+    console.log("[STOP] Speech recognition.stop() called");
+  }
+
+  // ===== START BUTTON =====
+  startBtn.onclick = () => {
+    console.log("[START BTN] Clicked");
+    startRecording();
 
     startBtn.style.display = "none";
     listeningControls.style.display = "flex";
     cancelBtn.style.display = "inline-block";
 
+    statusText.textContent = "Listening... Speak now";
     setListening();
   };
 
-  // ===== ❌ CANCEL =====
+  // ===== CANCEL =====
   cancelBtn.onclick = () => {
-    recognition.stop();
+    console.log("[CANCEL BTN] Clicked");
+    shouldSaveRecording = false;
+    stopRecording();
     isListening = false;
 
     startBtn.style.display = "inline-block";
@@ -55,14 +148,15 @@ document.addEventListener("DOMContentLoaded", () => {
     setIdle();
   };
 
-  // ===== 📤 SEND BUTTON (REAL BACKEND) =====
+  // ===== SEND =====
   sendBtn.onclick = async () => {
-    recognition.stop();
+    console.log("[SEND BTN] Clicked");
     isListening = false;
+    stopRecording();
+
+    console.log("[SEND BTN] Transcript captured:", transcript);
 
     setProcessing();
-
-    console.log("Sending transcript:", transcript);
 
     try {
       const payload = {
@@ -71,38 +165,39 @@ document.addEventListener("DOMContentLoaded", () => {
         title: document.title
       };
 
-      console.log("Payload:", payload);
+      console.log("[SEND] Payload:", payload);
 
-      const response = await fetch("http://localhost:3000/api/v1/tasks/generate", {
+      console.log("[SEND] Connecting to localhost:3000...");
+      const res = await fetch("http://localhost:3000/api/v1/tasks/generate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
 
-      const data = await response.json();
+      console.log("[SEND] Response received:", res.status, res.statusText);
 
-      console.log("Backend response:", data);
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("[SEND] Server error response:", errorText);
+        throw new Error(`Server error: ${res.status} ${res.statusText} - ${errorText}`);
+      }
 
+      console.log("[SEND] Parsing JSON response...");
+      const data = await res.json();
+      console.log("[SEND] Response data:", data);
       startOnboarding(data);
 
-    } catch (error) {
-      console.error("Backend error:", error);
+    } catch (err) {
+      console.error("[SEND] CATCH ERROR:", err.message);
+      console.error("[SEND] Full error:", err);
       statusText.textContent = "Error processing request";
     }
   };
 
-  // ===== 🧠 SPEECH RESULT =====
-  recognition.onresult = (event) => {
-    transcript = event.results[0][0].transcript;
-    console.log("User said:", transcript);
-  };
-
-  // ===== 🧭 START ONBOARDING =====
+  // ===== ONBOARDING =====
   function startOnboarding(data) {
-    if (!data || !data.steps) {
-      statusText.textContent = "⚠️ Invalid response";
+    if (!data?.steps) {
+      statusText.textContent = "Invalid response";
       return;
     }
 
@@ -113,7 +208,6 @@ document.addEventListener("DOMContentLoaded", () => {
     showStep();
   }
 
-  // ===== 📍 SHOW STEP =====
   function showStep() {
     const step = steps[currentStep];
 
@@ -122,48 +216,58 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         chrome.tabs.sendMessage(tabs[0].id, {
-          type: "HIGHLIGHT",
-          selector: step.selector
+          type: "CS_RENDER_STEP",
+          instruction: step.instruction,
+          target: step.selector
         });
       }
     });
   }
 
-  // ===== 🔁 RESET STATE =====
+  // ===== HELPERS =====
+  function clearHighlight() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: "CS_CLEAR_STEP" });
+      }
+    });
+  }
+
   function resetState() {
     steps = [];
     currentStep = 0;
     transcript = "";
   }
 
-  // ===== 🔁 STATES =====
-
+  // ===== UI STATES =====
   function setIdle() {
     isListening = false;
-    statusText.textContent = "Click the button to start";
+    statusText.textContent = "Click to start";
     onboardingDiv.style.display = "none";
+  }
+
+  function setProcessing() {
+  isListening = false;
+
+  statusText.textContent = "Thinking...";
+
+  // FIX: hide Send button container
+  listeningControls.style.display = "none";
+
+  // Keep cancel visible
+  cancelBtn.style.display = "inline-block";
+
+  onboardingDiv.style.display = "none";
+}
+
+  function setOnboarding() {
+    statusText.textContent = "Follow the steps";
+    onboardingDiv.style.display = "block";
   }
 
   function setListening() {
     isListening = true;
-    statusText.textContent = "Listening...";
-  }
-
-  function setProcessing() {
-    isListening = false;
-
-    statusText.textContent = "Thinking...";
-
-    startBtn.style.display = "none";
-    listeningControls.style.display = "none";
-    cancelBtn.style.display = "inline-block";
-
     onboardingDiv.style.display = "none";
-  }
-
-  function setOnboarding() {
-    onboardingDiv.style.display = "block";
-    statusText.textContent = "Follow the steps below";
   }
 
   // ===== INIT =====

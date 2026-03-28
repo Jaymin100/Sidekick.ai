@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "sidekick",
   "version": "1.0",
-  "permissions": ["sidePanel", "activeTab", "scripting"],
+  "permissions": ["sidePanel", "activeTab", "scripting", "http://localhost/*"],
   "background": {
     "service_worker": "background.js"
   },
