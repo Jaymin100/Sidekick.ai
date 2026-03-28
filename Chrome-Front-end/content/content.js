@@ -1,6 +1,7 @@
-﻿/**
+/**
  * Content script: full DOM capture + spotlight overlay (dim page, clear cutout on target).
- * Test from the extension content-script console: sidekickSpotlight(elOrSelector), sidekickClearSpotlight().
+ * Viewport sizing uses layout viewport (clientWidth/Height) so scrollbar gutter matches getBoundingClientRect.
+ * rAF loop keeps alignment when layout changes; doc + visualViewport observers catch scrollbar/focus shifts.
  */
 
 const SPOTLIGHT_ROOT_ID = "sidekick-spotlight-root";
@@ -8,14 +9,30 @@ const SPOTLIGHT_Z = "2147483646";
 const MIN_HOLE = 8;
 const PAD = 4;
 
-/** @type {{ root: HTMLElement | null, target: Element | null, raf: number, ac: AbortController | null, ro: ResizeObserver | null }} */
+/** @type {{ root: HTMLElement | null, target: Element | null, raf: number, trackRaf: number, ac: AbortController | null, ro: ResizeObserver | null }} */
 const spotlightState = {
   root: null,
   target: null,
   raf: 0,
+  trackRaf: 0,
   ac: null,
   ro: null,
 };
+
+/**
+ * Layout viewport size — stays in sync with getBoundingClientRect when classic scrollbars show/hide.
+ * @returns {{ w: number, h: number }}
+ */
+function getLayoutViewportSize() {
+  const doc = document.documentElement;
+  let w = doc?.clientWidth ?? 0;
+  let h = doc?.clientHeight ?? 0;
+  if (w <= 0 || h <= 0) {
+    w = window.innerWidth;
+    h = window.innerHeight;
+  }
+  return { w, h };
+}
 
 /**
  * @returns {string} Full document HTML.
@@ -67,8 +84,10 @@ function syncSpotlightGeometry() {
 
   const [topEl, leftEl, rightEl, bottomEl] = curtains;
   const r = target.getBoundingClientRect();
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const { w, h } = getLayoutViewportSize();
+
+  root.style.width = `${w}px`;
+  root.style.height = `${h}px`;
 
   let left = r.left - PAD;
   let top = r.top - PAD;
@@ -80,8 +99,8 @@ function syncSpotlightGeometry() {
   left = Math.max(0, Math.min(left, w - MIN_HOLE));
   top = Math.max(0, Math.min(top, h - MIN_HOLE));
 
-  topEl.style.cssText = `${curtainStyle()};left:0;top:0;width:100%;height:${Math.max(0, top)}px`;
-  bottomEl.style.cssText = `${curtainStyle()};left:0;top:${top + rh}px;width:100%;height:${Math.max(0, h - top - rh)}px`;
+  topEl.style.cssText = `${curtainStyle()};left:0;top:0;width:${w}px;height:${Math.max(0, top)}px`;
+  bottomEl.style.cssText = `${curtainStyle()};left:0;top:${top + rh}px;width:${w}px;height:${Math.max(0, h - top - rh)}px`;
   leftEl.style.cssText = `${curtainStyle()};left:0;top:${top}px;width:${Math.max(0, left)}px;height:${rh}px`;
   rightEl.style.cssText = `${curtainStyle()};left:${left + rw}px;top:${top}px;width:${Math.max(0, w - left - rw)}px;height:${rh}px`;
 
@@ -110,10 +129,25 @@ function scheduleSpotlightSync() {
   });
 }
 
+function spotlightTrackingTick() {
+  spotlightState.trackRaf = 0;
+  if (!spotlightState.target?.isConnected || !spotlightState.root) {
+    clearSpotlightInternal();
+    return;
+  }
+  syncSpotlightGeometry();
+  if (!spotlightState.root) return;
+  spotlightState.trackRaf = requestAnimationFrame(spotlightTrackingTick);
+}
+
 function clearSpotlightInternal() {
   if (spotlightState.raf) {
     cancelAnimationFrame(spotlightState.raf);
     spotlightState.raf = 0;
+  }
+  if (spotlightState.trackRaf) {
+    cancelAnimationFrame(spotlightState.trackRaf);
+    spotlightState.trackRaf = 0;
   }
   spotlightState.ro?.disconnect();
   spotlightState.ro = null;
@@ -126,23 +160,18 @@ function clearSpotlightInternal() {
   spotlightState.root = null;
 }
 
-/**
- * Remove spotlight overlay and listeners.
- */
 function sidekickClearSpotlight() {
   clearSpotlightInternal();
 }
 
-/**
- * @param {Element} targetEl
- */
 function mountSpotlight(targetEl) {
   sidekickClearSpotlight();
 
   const root = document.createElement("div");
   root.id = SPOTLIGHT_ROOT_ID;
   root.setAttribute("data-sidekick-spotlight", "true");
-  root.style.cssText = `position:fixed;inset:0;z-index:${SPOTLIGHT_Z};pointer-events:none;margin:0;padding:0;overflow:hidden`;
+  const { w, h } = getLayoutViewportSize();
+  root.style.cssText = `position:fixed;left:0;top:0;width:${w}px;height:${h}px;z-index:${SPOTLIGHT_Z};pointer-events:none;margin:0;padding:0;overflow:hidden`;
 
   for (let i = 0; i < 4; i++) {
     const c = document.createElement("div");
@@ -164,19 +193,57 @@ function mountSpotlight(targetEl) {
   window.addEventListener("scroll", scheduleSpotlightSync, { capture: true, passive: true, signal });
   window.addEventListener("resize", scheduleSpotlightSync, { passive: true, signal });
 
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener("resize", scheduleSpotlightSync, { passive: true, signal });
+    vv.addEventListener("scroll", scheduleSpotlightSync, { passive: true, signal });
+  }
+
+  const dismissIfFromTarget = (e) => {
+    const t = spotlightState.target;
+    if (!t?.isConnected) {
+      clearSpotlightInternal();
+      return;
+    }
+    const node = e.target;
+    if (!(node instanceof Node)) return;
+    if (!t.contains(node)) return;
+    clearSpotlightInternal();
+  };
+
+  targetEl.addEventListener(
+    "click",
+    (e) => {
+      if (e.button !== 0) return;
+      dismissIfFromTarget(e);
+    },
+    { capture: true, signal },
+  );
+
+  targetEl.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const node = e.target;
+      if (node instanceof HTMLElement) {
+        if (node.isContentEditable) return;
+        if (node.closest("input, textarea, select")) return;
+      }
+      dismissIfFromTarget(e);
+    },
+    { capture: true, signal },
+  );
+
   if (typeof ResizeObserver !== "undefined") {
     spotlightState.ro = new ResizeObserver(() => scheduleSpotlightSync());
     spotlightState.ro.observe(targetEl);
+    spotlightState.ro.observe(document.documentElement);
   }
 
   syncSpotlightGeometry();
+  spotlightState.trackRaf = requestAnimationFrame(spotlightTrackingTick);
 }
 
-/**
- * Resolve an Element from a CSS selector string or pass-through Element.
- * @param {string | Element} target
- * @returns {Element | null}
- */
 function resolveTarget(target) {
   if (target instanceof Element) return target.isConnected ? target : null;
   if (typeof target === "string" && target.trim()) {
@@ -190,11 +257,6 @@ function resolveTarget(target) {
   return null;
 }
 
-/**
- * Dim the page except around the target element (viewport-relative hole).
- * @param {string | Element} target CSS selector or Element
- * @returns {{ ok: boolean, error?: string }}
- */
 function sidekickSpotlight(target) {
   const el = resolveTarget(target);
   if (!el) {
