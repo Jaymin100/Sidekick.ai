@@ -39,7 +39,7 @@ copyDomBtn?.addEventListener("click", async () => {
       return;
     }
     await navigator.clipboard.writeText(html);
-    statusEl.textContent = `Copied ${res.mode || "HTML"} (${(html.length / 1024).toFixed(1)} KB). Save as .html if you want.`;
+    statusEl.textContent = `Copied full DOM (${(html.length / 1024).toFixed(1)} KB). Save as .html if you want.`;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     statusEl.textContent =
