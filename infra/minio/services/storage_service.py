@@ -1,7 +1,6 @@
-from minio import Minio
 from pathlib import Path
-from datetime import timedelta
-from infra.minio.constants.storage_service import EXPIRES_SECONDS
+from minio import Minio
+
 
 class StorageService:
     def __init__(
@@ -43,32 +42,10 @@ class StorageService:
         file_path: str,
     ) -> None:
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+
         self.client.fget_object(
             bucket_name=bucket_name,
             object_name=object_key,
             file_path=file_path,
         )
-
-    def get_presigned_put_url(
-        self,
-        bucket_name: str,
-        object_key: str,
-        expires_seconds: int = EXPIRES_SECONDS,
-    ) -> str:
-        return self.client.presigned_put_object(
-            bucket_name=bucket_name,
-            object_name=object_key,
-            expires=timedelta(seconds=expires_seconds),
-        )
-
-    def get_presigned_get_url(
-        self,
-        bucket_name: str,
-        object_key: str,
-        expires_seconds: int = EXPIRES_SECONDS,
-    ) -> str:
-        return self.client.presigned_get_object(
-            bucket_name=bucket_name,
-            object_name=object_key,
-            expires=timedelta(seconds=expires_seconds),
-        )
+    

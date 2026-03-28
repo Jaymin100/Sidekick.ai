@@ -6,8 +6,8 @@ from infra.minio.services.storage_service import StorageService
 from infra.minio.services.audio_storage_service import AudioStorageService
 from infra.minio.services.dom_storage_service import DomStorageService
 
-from app.routes.audio_routes import audio_bp
-from app.routes.dom_routes import dom_bp
+from apps.backend.app.routes.audio_routes import audio_bp
+from apps.backend.app.routes.dom_routes import dom_bp
 
 
 def create_app() -> Flask:
@@ -15,7 +15,7 @@ def create_app() -> Flask:
 
     app = Flask(__name__)
 
-    minio_endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+    minio_endpoint = os.getenv("MINIO_ENDPOINT")
     minio_access_key = os.getenv("MINIO_ROOT_USER")
     minio_secret_key = os.getenv("MINIO_ROOT_PASSWORD")
     minio_secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
@@ -28,8 +28,8 @@ def create_app() -> Flask:
     )
 
     app.config["storage_service"] = storage_service
-    app.config["audio_storage_manager"] = AudioStorageService(storage_service)
-    app.config["dom_storage_manager"] = DomStorageService(storage_service)
+    app.config["audio_storage_service"] = AudioStorageService(storage_service)
+    app.config["dom_storage_service"] = DomStorageService(storage_service)
 
     app.register_blueprint(audio_bp)
     app.register_blueprint(dom_bp)
@@ -45,5 +45,5 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("FLASK_PORT", "5000"))
+    port = int(os.getenv("FLASK_PORT", "5001"))
     app.run(host="0.0.0.0", port=port, debug=True)
