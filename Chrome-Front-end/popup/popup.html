@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -14,6 +14,21 @@
       <button type="button" id="copy-dom" class="btn btn-secondary">
         Copy full page HTML (DOM)
       </button>
+      <div class="spotlight-block">
+        <label class="label" for="spotlight-sel">Spotlight test (CSS selector)</label>
+        <input
+          id="spotlight-sel"
+          class="input"
+          type="text"
+          value="a"
+          placeholder="e.g. a, #id, button"
+          spellcheck="false"
+        />
+        <div class="row">
+          <button type="button" id="spotlight-run" class="btn btn-small">Spotlight</button>
+          <button type="button" id="spotlight-clear" class="btn btn-small btn-ghost">Clear</button>
+        </div>
+      </div>
       <p id="status" class="status" aria-live="polite"></p>
     </main>
     <script src="popup.js" type="module"></script>
