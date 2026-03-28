@@ -123,7 +123,7 @@ document.addEventListener("DOMContentLoaded", () => {
     statusText.textContent = "Listening... Speak now";
     setListening();
   };
-
+// hi
   // ===== CANCEL =====
   cancelBtn.onclick = () => {
     console.log("[CANCEL BTN] Clicked");
