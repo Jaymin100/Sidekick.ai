@@ -1,3 +1,5 @@
+import asyncio
+from threading import Thread
 from uuid import uuid4
 
 from flask import Blueprint, current_app, request, Response, jsonify
@@ -7,6 +9,25 @@ from infra.redis.utils.channel_builder import workflow_events_channel
 from apps.backend.core.enums.workflow_status import WorkflowStatus
 
 task_bp = Blueprint("task", __name__, url_prefix="/task")
+
+
+def _run_generate_steps_in_background(
+    app,
+    workflow_id: str,
+    object_key: str,
+    site_url: str,
+    page_title: str,
+) -> None:
+    with app.app_context():
+        orchestrator = current_app.config["generate_steps_orchestrator"]
+        asyncio.run(
+            orchestrator.run(
+                workflow_id=workflow_id,
+                object_key=object_key,
+                site_url=site_url,
+                page_title=page_title,
+            )
+        )
 
 
 @task_bp.post("/generate")
@@ -39,6 +60,15 @@ def generate_task():
         workflow_id=workflow_id,
         status=WorkflowStatus.QUEUED,
     )
+
+    app = current_app._get_current_object()
+
+    thread = Thread(
+        target=_run_generate_steps_in_background,
+        args=(app, workflow_id, object_key, site_url, page_title),
+        daemon=True,
+    )
+    thread.start()
 
     return jsonify({
         "workflow_id": state["workflow_id"],

@@ -17,6 +17,8 @@ class WebSearchNode(BaseNode[GenerateStepsWorkflowState]):
         self,
         state: GenerateStepsWorkflowState,
     ) -> GenerateStepsWorkflowState:
+        print("[WEB_SEARCH] start")
+        
         web_search_result = await self.web_search_client.search(
             query=state.get(GenerateStepsStateKey.SEARCH_QUERY)
         )

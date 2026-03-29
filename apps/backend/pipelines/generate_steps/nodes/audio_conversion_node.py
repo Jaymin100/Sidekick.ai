@@ -17,6 +17,8 @@ class AudioConversionNode(BaseNode[GenerateStepsWorkflowState]):
         self,
         state: GenerateStepsWorkflowState,
     ) -> GenerateStepsWorkflowState:
+        print("[AUDIO_CONVERSION] start")
+        
         input_audio_wav_bytes = self.ffmpeg_converter.convert_webm_to_wav_bytes(
             webm_bytes=state.get(GenerateStepsStateKey.INPUT_AUDIO_WEBM_BYTES)
         )

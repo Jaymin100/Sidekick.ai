@@ -17,8 +17,11 @@ class TranscriptionNode(BaseNode[GenerateStepsWorkflowState]):
         self,
         state: GenerateStepsWorkflowState,
     ) -> GenerateStepsWorkflowState:
-        input_audio_transcript = await self.stt_service.transcribe(
-            audio_bytes=state.get(GenerateStepsStateKey.INPUT_AUDIO_WAV_BYTES)
+        print("[TRANSCRIPTION] start")
+
+        input_audio_transcript = self.stt_service.transcribe(
+            audio_bytes=state.get(GenerateStepsStateKey.INPUT_AUDIO_WAV_BYTES),
+            filename=state.get(GenerateStepsStateKey.INPUT_AUDIO_OBJECT_KEY)
         )
 
         state.update({

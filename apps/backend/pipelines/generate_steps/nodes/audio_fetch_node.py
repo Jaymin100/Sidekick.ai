@@ -16,12 +16,14 @@ class AudioFetchNode(BaseNode[GenerateStepsWorkflowState]):
         self,
         state: GenerateStepsWorkflowState,
     ) -> GenerateStepsWorkflowState:
-        input_audio_webm_bytes = self.audio_storage_service.read_audio(
+        print("[AUDIO_FETCH] start")
+        
+        audio_result = self.audio_storage_service.read_audio(
             object_key=state.get(GenerateStepsStateKey.INPUT_AUDIO_OBJECT_KEY)
         )
 
         state.update({
-            GenerateStepsStateKey.INPUT_AUDIO_WEBM_BYTES: input_audio_webm_bytes
+            GenerateStepsStateKey.INPUT_AUDIO_WEBM_BYTES: audio_result["bytes"]
         })
 
         return state
