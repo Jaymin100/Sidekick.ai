@@ -1,0 +1,1 @@
+WORKFLOW_STATE_TTL_SECONDS = 60 * 60 * 4  # 4 hours

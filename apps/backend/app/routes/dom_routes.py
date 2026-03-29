@@ -3,8 +3,6 @@ from uuid import uuid4
 import tempfile
 import os
 
-from apps.backend.test_dom_pipeline import TestDomPipeline
-
 dom_bp = Blueprint("dom", __name__, url_prefix="/dom")
 
 
@@ -28,12 +26,6 @@ def upload_dom():
             object_key=object_key,
             file_path=temp_file.name,
         )
-
-        try:
-            parsed_content = TestDomPipeline.run(object_key)
-            print(f"[PARSED DOM]\n{parsed_content}")
-        except Exception as exc:
-            print(f"[DOM PROCESSING ERROR] object_key={object_key} error={exc}")
 
         return jsonify(result), 201
     finally:
@@ -68,3 +60,62 @@ def download_dom():
     finally:
         if os.path.exists(temp_file.name):
             os.unlink(temp_file.name)
+
+@dom_bp.post("/content")
+def submit_dom_content():
+    data = request.get_json(silent=True) or {}
+
+    workflow_id = data.get("workflow_id")
+    site_url = data.get("site_url")
+    page_title = data.get("page_title")
+    object_key = data.get("object_key")
+
+    if not workflow_id:
+        return jsonify({"error": "workflow_id is required"}), 400
+    if not site_url:
+        return jsonify({"error": "site_url is required"}), 400
+    if not page_title:
+        return jsonify({"error": "page_title is required"}), 400
+    if not object_key:
+        return jsonify({"error": "object_key is required"}), 400
+
+    return jsonify({
+        "workflow_id": workflow_id,
+        "status": "in_progress",
+        "next_action": {
+            "step_id": "step-1",
+            "instruction": "Dummy action for testing",
+            "action_type": "highlight",
+        },
+    }), 200
+
+@dom_bp.post("/update")
+def submit_dom_update():
+    data = request.get_json(silent=True) or {}
+
+    workflow_id = data.get("workflow_id")
+    event = data.get("event")
+    site_url = data.get("site_url")
+    page_title = data.get("page_title")
+    object_key = data.get("bject_key")
+
+    if not workflow_id:
+        return jsonify({"error": "workflow_id is required"}), 400
+    if not event:
+        return jsonify({"error": "event is required"}), 400
+    if not site_url:
+        return jsonify({"error": "site_url is required"}), 400
+    if not page_title:
+        return jsonify({"error": "page_title is required"}), 400
+    if not object_key:
+        return jsonify({"error": "object_key is required"}), 400
+
+    return jsonify({
+        "workflow_id": workflow_id,
+        "status": "in_progress",
+        "next_action": {
+            "step_id": "step-2",
+            "instruction": "Next dummy action for testing",
+            "action_type": "click",
+        },
+    }), 200
