@@ -3,9 +3,9 @@ from typing import Any
 
 from apps.backend.core.enums.workflow_status import WorkflowStatus
 
-from redis.constants.redis_service import WORKFLOW_STATE_TTL_SECONDS
-from redis.services.redis_service import RedisService
-from redis.utils.key_builder import workflow_state_key
+from infra.redis.constants.redis_service import WORKFLOW_STATE_TTL_SECONDS
+from infra.redis.services.redis_service import RedisService
+from infra.redis.utils.key_builder import workflow_state_key
 
 
 class WorkflowStateService:

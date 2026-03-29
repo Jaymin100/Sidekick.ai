@@ -97,7 +97,7 @@ def submit_dom_update():
     event = data.get("event")
     site_url = data.get("site_url")
     page_title = data.get("page_title")
-    object_key = data.get("bject_key")
+    object_key = data.get("object_key")
 
     if not workflow_id:
         return jsonify({"error": "workflow_id is required"}), 400

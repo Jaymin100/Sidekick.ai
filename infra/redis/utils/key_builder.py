@@ -1,4 +1,4 @@
-from redis.constants.keys import (
+from infra.redis.constants.keys import (
     WORKFLOW_PREFIX,
     STATE_SUFFIX,
     CANCELLED_SUFFIX,

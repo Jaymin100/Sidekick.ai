@@ -1,8 +1,8 @@
 from datetime import datetime, UTC
 from typing import Any
 
-from redis.services.redis_service import RedisService
-from redis.utils.channel_builder import workflow_events_channel
+from infra.redis.services.redis_service import RedisService
+from infra.redis.utils.channel_builder import workflow_events_channel
 
 
 class WorkflowEventService:
