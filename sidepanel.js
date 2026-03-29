@@ -9,6 +9,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusText = document.getElementById("status");
   const onboardingDiv = document.getElementById("onboarding");
   const stepInfo = document.getElementById("stepInfo");
+  const taskTitle = document.getElementById("taskTitle");
+  const cancelBtnOnboarding = document.getElementById("cancelBtnOnboarding");
 
   // ===== STATE =====
   let steps = [];
@@ -16,130 +18,133 @@ document.addEventListener("DOMContentLoaded", () => {
   let transcript = "";
   let isListening = false;
   let shouldSaveRecording = true;
+  let currentTask = null;
 
   let mediaRecorder = null;
   let audioChunks = [];
   let uploadPromise = null;
   let recognitionEndResolve = null;
 
-  // ===== SPEECH RECOGNITION =====
-  const recognition = new webkitSpeechRecognition();
-  recognition.lang = "en-US";
-  recognition.continuous = true;
-  recognition.interimResults = true;
+  // ===== SPEECH RECOGNITION (CROSS-BROWSER) =====
+  const SpeechRecognition =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  recognition.onstart = () => {
-    console.log("[SPEECH] Recognition started");
-  };
+  let recognition = null;
 
-  recognition.onresult = (event) => {
-    console.log("[SPEECH] onresult fired - event:", event);
-    let interimTranscript = "";
-    
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcriptSegment = event.results[i][0].transcript;
-      
-      if (event.results[i].isFinal) {
-        console.log("[SPEECH] FINAL result:", transcriptSegment);
-        transcript = transcriptSegment; // Keep latest final result
-      } else {
-        console.log("[SPEECH] INTERIM result:", transcriptSegment);
-        interimTranscript += transcriptSegment;
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => {
+      console.log("[SPEECH] Recognition started");
+    };
+
+    recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const segment = event.results[i][0].transcript;
+
+        if (event.results[i].isFinal) {
+          transcript += segment + " ";
+          console.log("[SPEECH] FINAL:", segment);
+        }
       }
-    }
-    
-    console.log("[SPEECH] Current transcript:", transcript);
-  };
+      console.log("[SPEECH] Transcript:", transcript);
+    };
 
-  recognition.onerror = (event) => {
-    console.error("[SPEECH] Error:", event.error);
-  };
+    recognition.onerror = (event) => {
+      console.error("[SPEECH] Error:", event.error);
+    };
 
-  recognition.onend = () => {
-    console.log("[SPEECH] Recognition ended");
-    if (recognitionEndResolve) {
-      recognitionEndResolve();
-      recognitionEndResolve = null;
-    }
-  };
+    recognition.onend = () => {
+      console.log("[SPEECH] Recognition ended");
+
+      if (recognitionEndResolve) {
+        recognitionEndResolve();
+        recognitionEndResolve = null;
+      }
+    };
+  } else {
+    console.warn("SpeechRecognition not supported");
+  }
 
   // ===== RECORDING =====
   async function startRecording() {
-    console.log("[RECORD] startRecording() called");
-    transcript = ""; // Reset transcript
+    console.log("[RECORD] startRecording()");
+    transcript = "";
     shouldSaveRecording = true;
-    
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    console.log("[RECORD] Microphone access granted");
 
-    mediaRecorder = new MediaRecorder(stream);
-    audioChunks = [];
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    mediaRecorder.ondataavailable = (e) => {
-      audioChunks.push(e.data);
-    };
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
 
-    mediaRecorder.onstop = async () => {
-      if (!shouldSaveRecording) {
-        console.log("[RECORD] Recording discarded");
-        audioChunks = [];
-        return;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        if (!shouldSaveRecording) {
+          console.log("[RECORD] Discarded");
+          return;
+        }
+
+        const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+
+        uploadPromise = fetch("http://10.101.16.249:5001/audio/upload", {
+          method: "POST",
+          body: (() => {
+            const fd = new FormData();
+            fd.append("file", audioBlob, "recording.webm");
+            return fd;
+          })()
+        })
+          .then(res => res.json())
+          .then(data => {
+            console.log("[UPLOAD OK]", data);
+            return data;
+          })
+          .catch(err => {
+            console.error("[UPLOAD FAIL]", err);
+          });
+      };
+
+      mediaRecorder.start();
+
+      if (recognition) {
+        try {
+          recognition.start();
+        } catch {
+          console.warn("[SPEECH] Already started");
+        }
       }
 
-      const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-
-      console.log("[RECORD] Audio ready:", audioBlob);
-
-      // Upload to backend
-      uploadPromise = (async () => {
-        try {
-          const formData = new FormData();
-          formData.append("file", audioBlob, "recording.webm");
-
-          console.log("[RECORD] Uploading audio to backend...");
-          const uploadRes = await fetch("http://10.101.16.249:5001/audio/upload", {
-            method: "POST",
-            body: formData
-          });
-
-          if (!uploadRes.ok) {
-            const errorText = await uploadRes.text();
-            console.error("[RECORD] Upload error:", errorText);
-            throw new Error(`Upload failed: ${uploadRes.status}`);
-          }
-
-          const uploadData = await uploadRes.json();
-          console.log("[RECORD] Upload successful:", uploadData);
-          return uploadData;
-
-        } catch (err) {
-          console.error("[RECORD] Upload error:", err.message);
-        }
-      })();
-    };
-
-    mediaRecorder.start();
-    console.log("[RECORD] MediaRecorder started");
-    
-    console.log("[RECORD] Starting speech recognition...");
-    recognition.start();
-    console.log("[RECORD] Speech recognition.start() called");
+    } catch (err) {
+      console.error("[MIC ERROR]", err);
+      statusText.textContent = "Microphone access denied";
+    }
   }
 
   function stopRecording() {
-    console.log("[STOP] stopRecording() called");
+    console.log("[STOP] Called");
+
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
       mediaRecorder.stop();
-      console.log("[STOP] MediaRecorder stopped");
     }
-    console.log("[STOP] Stopping speech recognition...");
-    recognition.stop();
-    console.log("[STOP] Speech recognition.stop() called");
+
+    if (recognition) {
+      try {
+        recognition.stop();
+      } catch {
+        console.warn("[SPEECH] stop failed");
+      }
+    }
   }
 
-  // ===== START BUTTON =====
+  // ===== START =====
   startBtn.onclick = () => {
-    console.log("[START BTN] Clicked");
     startRecording();
 
     startBtn.style.display = "none";
@@ -147,29 +152,29 @@ document.addEventListener("DOMContentLoaded", () => {
     cancelBtn.style.display = "inline-block";
 
     statusText.textContent = "Listening... Speak now";
-    setListening();
+    isListening = true;
   };
 
-  // ===== CANCEL =====
+  // ===== CANCEL (FULL RESET) =====
   cancelBtn.onclick = () => {
-    console.log("[CANCEL BTN] Clicked");
+    console.log("[CANCEL] Full cancel");
+
     shouldSaveRecording = false;
+
     stopRecording();
+
+    recognitionEndResolve = null;
+    uploadPromise = null;
+
+    transcript = "";
     isListening = false;
+
+    resetState();
+    clearHighlight();
 
     startBtn.style.display = "inline-block";
     listeningControls.style.display = "none";
     cancelBtn.style.display = "none";
-
-    resetState();
-
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: "CLEAR"
-        });
-      }
-    });
 
     setIdle();
   };
@@ -177,61 +182,43 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===== SEND =====
   sendBtn.onclick = async () => {
     console.log("[SEND BTN] Clicked");
+
     isListening = false;
     stopRecording();
 
-    // Wait for speech recognition to actually complete
-    await new Promise(resolve => {
-      recognitionEndResolve = resolve;
-    });
+    // Wait for recognition OR timeout (Edge fix)
+    await Promise.race([
+      new Promise(resolve => (recognitionEndResolve = resolve)),
+      new Promise(resolve => setTimeout(resolve, 1000))
+    ]);
 
-    console.log("[SEND BTN] FINAL Transcript:", transcript);
+    console.log("[SEND] FINAL Transcript:", transcript);
 
     setProcessing();
 
     try {
-      // Wait for audio upload to comp  lete
-      if (uploadPromise) {
-        const uploadData = await uploadPromise;
-        console.log("[SEND] Audio uploaded:", uploadData);
-      }
+      if (uploadPromise) await uploadPromise;
 
-      const payload = {
-        userIntent: transcript,
-        url: window.location.href,
-        title: document.title
-      };
-
-      console.log("[SEND] Payload:", payload);
-
-      console.log("[SEND] Connecting to backend...");
       const res = await fetch("http://10.101.16.249:5001/api/v1/tasks/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          userIntent: transcript,
+          url: window.location.href,
+          title: document.title
+        })
       });
 
-      console.log("[SEND] Response received:", res.status, res.statusText);
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error("[SEND] Server error response:", errorText);
-        throw new Error(`Server error: ${res.status} ${res.statusText} - ${errorText}`);
-      }
-
-      console.log("[SEND] Parsing JSON response...");
       const data = await res.json();
-      console.log("[SEND] Response data:", data);
       startOnboarding(data);
 
     } catch (err) {
-      console.error("[SEND] CATCH ERROR:", err.message);
-      console.error("[SEND] Full error:", err);
+      console.error("[SEND ERROR]", err);
       statusText.textContent = "Error processing request";
     }
   };
 
-  // ===== NEXT BUTTON =====
+  // ===== NEXT STEP =====
   const nextBtn = document.getElementById("nextBtn");
 
   nextBtn.onclick = () => {
@@ -240,10 +227,42 @@ document.addEventListener("DOMContentLoaded", () => {
     if (currentStep < steps.length) {
       showStep();
     } else {
-      statusText.textContent = "✅ Task completed";
-      onboardingDiv.style.display = "none";
+      statusText.textContent = "[COMPLETE] Task completed!";
+      stepInfo.textContent = "";
+      cancelBtn.style.display = "none";
+      cancelBtnOnboarding.style.display = "none";
+      clearHighlight();
+      setTimeout(() => setIdle(), 2000);
     }
   };
+
+  // ===== CANCEL ONBOARDING =====
+  cancelBtnOnboarding.onclick = () => {
+    resetState();
+    clearHighlight();
+    setIdle();
+  };
+
+  // ===== CONTENT SCRIPT MESSAGES =====
+  chrome.runtime.onMessage.addListener((message) => {
+
+    if (message.type === "PANEL_STEP_RENDERED") {
+      statusText.textContent = "Interact with highlighted element";
+    }
+
+    if (message.type === "PANEL_ELEMENT_NOT_FOUND") {
+      statusText.textContent = "[ERROR] Element not found";
+    }
+
+    if (message.type === "PANEL_STEP_COMPLETED") {
+      statusText.textContent = "[COMPLETE] Step done!";
+      setTimeout(() => nextBtn.click(), 500);
+    }
+
+    if (message.type === "PANEL_ERROR") {
+      statusText.textContent = "[ERROR]";
+    }
+  });
 
   // ===== ONBOARDING =====
   function startOnboarding(data) {
@@ -252,6 +271,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    currentTask = data;
     steps = data.steps;
     currentStep = 0;
 
@@ -262,7 +282,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function showStep() {
     const step = steps[currentStep];
 
-    stepInfo.textContent = `Step ${currentStep + 1}: ${step.instruction}`;
+    stepInfo.textContent =
+      `Step ${currentStep + 1} of ${steps.length}: ${step.instruction}`;
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
@@ -270,16 +291,17 @@ document.addEventListener("DOMContentLoaded", () => {
           type: "CS_RENDER_STEP",
           instruction: step.instruction,
           target: step.selector
-        });
+        }).catch(() => {});
       }
     });
   }
 
-  // ===== HELPERS =====
   function clearHighlight() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, { type: "CS_CLEAR_STEP" });
+        chrome.tabs.sendMessage(tabs[0].id, {
+          type: "CS_CLEAR_STEP"
+        }).catch(() => {});
       }
     });
   }
@@ -288,37 +310,28 @@ document.addEventListener("DOMContentLoaded", () => {
     steps = [];
     currentStep = 0;
     transcript = "";
+    currentTask = null;
   }
 
   // ===== UI STATES =====
   function setIdle() {
-    isListening = false;
     statusText.textContent = "Click to start";
     onboardingDiv.style.display = "none";
+    cancelBtnOnboarding.style.display = "none";
   }
 
   function setProcessing() {
-  isListening = false;
-
-  statusText.textContent = "Thinking...";
-
-  // FIX: hide Send button container
-  listeningControls.style.display = "none";
-
-  // Keep cancel visible
-  cancelBtn.style.display = "inline-block";
-
-  onboardingDiv.style.display = "none";
-}
+    statusText.textContent = "Thinking...";
+    listeningControls.style.display = "none";
+    cancelBtn.style.display = "inline-block";
+    onboardingDiv.style.display = "none";
+  }
 
   function setOnboarding() {
     statusText.textContent = "Follow the steps";
+    taskTitle.textContent = currentTask?.title || "Task";
     onboardingDiv.style.display = "block";
-  }
-
-  function setListening() {
-    isListening = true;
-    onboardingDiv.style.display = "none";
+    cancelBtnOnboarding.style.display = "inline-block";
   }
 
   // ===== INIT =====

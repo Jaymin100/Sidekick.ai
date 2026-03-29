@@ -2,12 +2,14 @@
   "manifest_version": 3,
   "name": "sidekick",
   "version": "1.0",
-  "permissions": ["sidePanel", "activeTab", "scripting", "http://localhost/*"],
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
-  "side_panel": {
-    "default_path": "sidepanel.html"
+  "action": {
+    "default_popup": "sidepanel.html",
+    "default_title": "Sidekick"
   },
   "content_scripts": [
     {
