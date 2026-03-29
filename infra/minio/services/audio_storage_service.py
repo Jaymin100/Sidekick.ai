@@ -1,5 +1,6 @@
 from uuid import uuid4
 from werkzeug.datastructures import FileStorage
+from io import BytesIO
 
 from infra.minio.services.storage_service import StorageService
 from infra.minio.constants.audio import (
@@ -56,6 +57,28 @@ class AudioStorageService:
             "bucket": AUDIO_BUCKET,
             "object_key": object_key,
             "filename": filename,
+            "mime_type": mime_type,
+        }
+    
+    def upload_audio_bytes(
+        self,
+        object_key: str,
+        audio_bytes: bytes,
+        mime_type: str,
+    ) -> dict:
+        data = BytesIO(audio_bytes)
+
+        self.storage.client.put_object(
+            bucket_name=AUDIO_BUCKET,
+            object_name=object_key,
+            data=data,
+            length=len(audio_bytes),
+            content_type=mime_type,
+        )
+
+        return {
+            "bucket": AUDIO_BUCKET,
+            "object_key": object_key,
             "mime_type": mime_type,
         }
     

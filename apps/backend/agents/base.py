@@ -19,8 +19,20 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
     @abstractmethod
     def build_user_prompt(self, input_data: str) -> str:
         raise NotImplementedError
+    
+    def run(self, input_data: InputT) -> OutputT:
+        system_prompt = self.build_system_prompt()
+        user_prompt = self.build_user_prompt(input_data)
 
-    async def run(self, input_data: InputT) -> OutputT:
+        response = self.llm_with_structured_output.invoke(
+            [
+                ("system", system_prompt),
+                ("human", user_prompt),
+            ]
+        )
+        return response
+
+    async def arun(self, input_data: InputT) -> OutputT:
         system_prompt = self.build_system_prompt()
         user_prompt = self.build_user_prompt(input_data)
 

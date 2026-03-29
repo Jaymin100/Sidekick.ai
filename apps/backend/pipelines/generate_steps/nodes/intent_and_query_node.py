@@ -15,7 +15,7 @@ class IntentAndQueryNode(BaseNode[GenerateStepsWorkflowState]):
         self,
         state: GenerateStepsWorkflowState,
     ) -> GenerateStepsWorkflowState:
-        result = await self.agent.run(
+        result = await self.agent.arun(
             IntentAndQueryInput(
                 user_input=state.get(GenerateStepsStateKey.INPUT_AUDIO_TRANSCRIPT),
                 site_url=state.get(GenerateStepsStateKey.SITE_URL),
