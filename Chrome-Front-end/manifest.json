@@ -29,6 +29,8 @@
 
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
 
+  "host_permissions": ["http://10.101.16.249/*"],
+
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],

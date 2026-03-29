@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   color-scheme: light dark;
   --bg: canvas;
   --fg: canvastext;
@@ -58,6 +58,12 @@ body {
 .btn-secondary {
   margin-top: 8px;
   width: 100%;
+}
+
+#audio-player {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
 }
 
 .spotlight-block {
