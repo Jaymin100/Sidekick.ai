@@ -1,0 +1,5 @@
+AUDIO_FETCH = "audio_fetch_node"
+AUDIO_CONVERSION = "audio_conversion_node"
+TRANSCRIPTION = "transcription_node"
+INTENT_AND_QUERY = "intent_and_query_node"
+WEB_SEARCH = "web_search_node"

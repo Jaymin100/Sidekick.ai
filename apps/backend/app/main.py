@@ -46,8 +46,9 @@ def create_app() -> Flask:
     app.config["storage_service"] = storage_service
     app.config["audio_storage_service"] = AudioStorageService(storage_service)
     app.config["dom_storage_service"] = DomStorageService(storage_service)
-    app.config["worfklow_event_service"] = WorkflowEventService(redis_service=redis_service)
-    app.config["worfklow_state_service"] = WorkflowStateService(redis_service=redis_service)
+    app.config["workflow_event_service"] = WorkflowEventService(redis_service=redis_service)
+    app.config["workflow_state_service"] = WorkflowStateService(redis_service=redis_service)
+    app.config["redis_service"] = redis_service
 
     app.register_blueprint(audio_bp)
     app.register_blueprint(dom_bp)

@@ -86,6 +86,7 @@ def submit_dom_content():
             "step_id": "step-1",
             "instruction": "Dummy action for testing",
             "action_type": "highlight",
+            "element": "a"
         },
     }), 200
 
