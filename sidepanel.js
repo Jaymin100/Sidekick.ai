@@ -1,3 +1,5 @@
+const API_BASE = "http://10.101.16.249:5001";
+
 document.addEventListener("DOMContentLoaded", () => {
 
   // ===== ELEMENTS =====
@@ -24,6 +26,71 @@ document.addEventListener("DOMContentLoaded", () => {
   let audioChunks = [];
   let uploadPromise = null;
   let recognitionEndResolve = null;
+
+  /** Set from POST /audio/upload response (`object_key` or `objectKey`). */
+  let audioObjectKey = null;
+
+  /** @type {EventSource | null} */
+  let workflowEventSource = null;
+
+  function closeWorkflowStream() {
+    if (workflowEventSource) {
+      workflowEventSource.close();
+      workflowEventSource = null;
+    }
+  }
+
+  /**
+   * @param {Record<string, unknown>} payload
+   */
+  function handleWorkflowEvent(payload) {
+    console.log("[SSE] workflow update", payload);
+
+    if (Array.isArray(payload.steps) && payload.steps.length > 0) {
+      startOnboarding({
+        title: typeof payload.title === "string" ? payload.title : currentTask?.title ?? "Task",
+        steps: payload.steps,
+      });
+      return;
+    }
+
+    if (
+      typeof payload.instruction === "string" &&
+      typeof payload.selector === "string"
+    ) {
+      startOnboarding({
+        title: typeof payload.title === "string" ? payload.title : "Task",
+        steps: [{ instruction: payload.instruction, selector: payload.selector }],
+      });
+      return;
+    }
+
+    if (typeof payload.status === "string" || typeof payload.status === "number") {
+      statusText.textContent = String(payload.status);
+    }
+    if (typeof payload.message === "string") {
+      stepInfo.textContent = payload.message;
+    }
+  }
+
+  function openWorkflowStream(workflowId) {
+    closeWorkflowStream();
+    const url = `${API_BASE}/task/${workflowId}/events`;
+    workflowEventSource = new EventSource(url);
+
+    workflowEventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        handleWorkflowEvent(payload);
+      } catch (e) {
+        console.warn("[SSE] bad JSON", e, event.data);
+      }
+    };
+
+    workflowEventSource.onerror = (err) => {
+      console.error("[SSE] error", err);
+    };
+  }
 
   // ===== SPEECH RECOGNITION (CROSS-BROWSER) =====
   const SpeechRecognition =
@@ -74,6 +141,7 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log("[RECORD] startRecording()");
     transcript = "";
     shouldSaveRecording = true;
+    audioObjectKey = null;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -93,21 +161,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
 
-        uploadPromise = fetch("http://10.101.16.249:5001/audio/upload", {
+        uploadPromise = fetch(`${API_BASE}/audio/upload`, {
           method: "POST",
           body: (() => {
             const fd = new FormData();
             fd.append("file", audioBlob, "recording.webm");
             return fd;
-          })()
+          })(),
         })
-          .then(res => res.json())
-          .then(data => {
-            console.log("[UPLOAD OK]", data);
+          .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              console.error("[UPLOAD FAIL]", res.status, data);
+              audioObjectKey = null;
+              throw new Error(data?.error || `HTTP ${res.status}`);
+            }
+            audioObjectKey =
+              data.object_key ?? null;
+            if (!audioObjectKey) {
+              console.warn("[UPLOAD] Response had no object_key:", data);
+            } else {
+              console.log("[UPLOAD OK] object_key:", audioObjectKey);
+            }
             return data;
           })
-          .catch(err => {
+          .catch((err) => {
             console.error("[UPLOAD FAIL]", err);
+            audioObjectKey = null;
+            throw err;
           });
       };
 
@@ -162,9 +243,11 @@ document.addEventListener("DOMContentLoaded", () => {
     shouldSaveRecording = false;
 
     stopRecording();
+    closeWorkflowStream();
 
     recognitionEndResolve = null;
     uploadPromise = null;
+    audioObjectKey = null;
 
     transcript = "";
     isListening = false;
@@ -199,18 +282,49 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       if (uploadPromise) await uploadPromise;
 
-      const res = await fetch("http://10.101.16.249:5001/api/v1/tasks/generate", {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const activeTab = tabs[0];
+      const pageUrl = activeTab?.url ?? "";
+      const pageTitle = activeTab?.title ?? "";
+
+      const generateBody = {
+        site_url: pageUrl,
+        page_title: pageTitle,
+      };
+      if (audioObjectKey) {
+        generateBody.object_key = audioObjectKey;
+      }
+
+      const res = await fetch(`${API_BASE}/task/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userIntent: transcript,
-          url: window.location.href,
-          title: document.title
-        })
+        body: JSON.stringify(generateBody),
       });
 
-      const data = await res.json();
-      startOnboarding(data);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        statusText.textContent = data?.error ? String(data.error) : `Error ${res.status}`;
+        return;
+      }
+
+      const workflowId = data.workflow_id ?? data.workflowId;
+      const initialStatus = data.status;
+
+      if (initialStatus != null) {
+        statusText.textContent = String(initialStatus);
+      }
+
+      if (Array.isArray(data.steps) && data.steps.length > 0) {
+        startOnboarding(data);
+      } else if (!workflowId) {
+        statusText.textContent = "Invalid response (no workflow_id or steps)";
+        return;
+      }
+
+      if (workflowId) {
+        currentTask = { ...data, workflow_id: workflowId };
+        openWorkflowStream(workflowId);
+      }
 
     } catch (err) {
       console.error("[SEND ERROR]", err);
@@ -238,6 +352,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ===== CANCEL ONBOARDING =====
   cancelBtnOnboarding.onclick = () => {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
     resetState();
     clearHighlight();
     setIdle();
@@ -307,10 +442,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function resetState() {
+    closeWorkflowStream();
     steps = [];
     currentStep = 0;
     transcript = "";
     currentTask = null;
+    audioObjectKey = null;
   }
 
   // ===== UI STATES =====
