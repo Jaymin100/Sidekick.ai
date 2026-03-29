@@ -1,5 +1,6 @@
 from typing import TypedDict
 from apps.backend.core.enums.intent import Intent
+from apps.backend.services.search.serpapi.google_ai_mode.types import GoogleAiModeSearchResult
 
 class GenerateStepsWorkflowState(TypedDict, total=False):
     input_audio_object_key: str
@@ -13,5 +14,4 @@ class GenerateStepsWorkflowState(TypedDict, total=False):
     user_intent: Intent
     task_summary: str
     search_query: str
-    web_search_result: str
-
+    web_search_result: GoogleAiModeSearchResult

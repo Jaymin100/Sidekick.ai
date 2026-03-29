@@ -43,6 +43,8 @@ class LlmTextSerializer:
             )
 
     def _format_node(self, node: NormalizedNode) -> Optional[str]:
+        locator = self._locator_suffix(node)
+
         if node.tag == "text":
             if not node.text:
                 return None
@@ -51,72 +53,87 @@ class LlmTextSerializer:
         if node.tag in HEADING_TAGS:
             content = self._best_label(node)
             if not content:
-                return node.tag
-            return f"{node.tag}: {self._truncate(content)}"
+                return f"{node.tag}{locator}"
+            return f"{node.tag}: {self._truncate(content)}{locator}"
 
         if node.tag in SECTION_TAGS:
             content = self._best_label(node)
             if content:
-                return f"{node.tag}: {self._truncate(content)}"
-            return node.tag
+                return f"{node.tag}: {self._truncate(content)}{locator}"
+            return f"{node.tag}{locator}"
 
         if node.interactive:
             return self._format_interactive_node(node)
 
         if node.text:
-            return f"{node.tag}: {self._truncate(node.text)}"
+            return f"{node.tag}: {self._truncate(node.text)}{locator}"
 
         if node.accessible_name:
-            return f"{node.tag}: {self._truncate(node.accessible_name)}"
+            return f"{node.tag}: {self._truncate(node.accessible_name)}{locator}"
 
         if node.tag in {"div", "span"}:
             return None
 
-        return node.tag
+        return f"{node.tag}{locator}"
 
     def _format_interactive_node(self, node: NormalizedNode) -> str:
         name = self._best_label(node)
+        locator = self._locator_suffix(node)
 
         if node.tag == "input":
             input_type = node.attributes.get("type", "text")
             if name:
-                return f"input ({input_type}): {self._truncate(name)}"
-            return f"input ({input_type})"
+                return f"input ({input_type}): {self._truncate(name)}{locator}"
+            return f"input ({input_type}){locator}"
 
         if node.tag == "textarea":
             if name:
-                return f"textarea: {self._truncate(name)}"
-            return "textarea"
+                return f"textarea: {self._truncate(name)}{locator}"
+            return f"textarea{locator}"
 
         if node.tag == "select":
             if name:
-                return f"select: {self._truncate(name)}"
-            return "select"
+                return f"select: {self._truncate(name)}{locator}"
+            return f"select{locator}"
 
         if node.tag == "button":
             if name:
-                return f"button: {self._truncate(name)}"
-            return "button"
+                return f"button: {self._truncate(name)}{locator}"
+            return f"button{locator}"
 
         if node.tag == "a":
             href = node.attributes.get("href")
             if name and href:
-                return f"link: {self._truncate(name)} -> {href}"
+                return f'link: {self._truncate(name)} -> "{href}"{locator}'
             if name:
-                return f"link: {self._truncate(name)}"
+                return f"link: {self._truncate(name)}{locator}"
             if href:
-                return f"link -> {href}"
-            return "link"
+                return f'link -> "{href}"{locator}'
+            return f"link{locator}"
 
         role = node.role or node.attributes.get("role")
         if role and name:
-            return f"{role}: {self._truncate(name)}"
+            return f"{role}: {self._truncate(name)}{locator}"
         if role:
-            return str(role)
+            return f"{role}{locator}"
         if name:
-            return f"{node.tag}: {self._truncate(name)}"
+            return f"{node.tag}: {self._truncate(name)}{locator}"
 
-        return node.tag
+        return f"{node.tag}{locator}"
+
+    def _locator_suffix(self, node: NormalizedNode) -> str:
+        parts = []
+
+        if node.dom_id:
+            parts.append(f'id="{node.dom_id}"')
+
+        if node.css_selector:
+            parts.append(f'selector="{node.css_selector}"')
+
+        if not parts:
+            return ""
+
+        return " [" + ", ".join(parts) + "]"
 
     def _best_label(self, node: NormalizedNode) -> Optional[str]:
         candidates = (

@@ -20,11 +20,15 @@ from apps.backend.app.routes.task_routes import task_bp
 from apps.backend.services.stt.elevenlabs_stt_service import ElevenLabsSTTService
 from apps.backend.services.tts.elevenlabs_tts_service import ElevenLabsTTSService
 from apps.backend.core.audio.converters.ffmpeg import FfmpegConverter
+from apps.backend.core.dom.parsers.dom_parsers import DomParser
+from apps.backend.core.dom.serializers.llm_text_serializer import LlmTextSerializer
 from apps.backend.services.search.serpapi.google_ai_mode.client import GoogleAiModeClient
 
 from apps.backend.pipelines.generate_steps.workflow import GenerateStepsWorkflow
-from apps.backend.orchestrators.generate_steps_orchestrator import GenerateStepsOrchestrator
+from apps.backend.pipelines.guided_execution.workflow import GuidedExecutionWorkflow
 
+from apps.backend.orchestrators.generate_steps_orchestrator import GenerateStepsOrchestrator
+from apps.backend.orchestrators.guided_execution_orchestrator import GuidedExecutionOrchestrator
 
 def create_app() -> Flask:
     load_dotenv()
@@ -92,6 +96,15 @@ def create_app() -> Flask:
         )
     )
 
+    guided_execution_workflow = GuidedExecutionWorkflow(
+        llm=llm,
+        dom_storage_service=dom_storage_service,
+        dom_parser=DomParser(),
+        dom_serializer=LlmTextSerializer(),
+        tts_service=tts_service,
+        audio_storage_service=audio_storage_service
+    )
+
     app.config["storage_service"] = storage_service
     app.config["audio_storage_service"] = audio_storage_service
     app.config["dom_storage_service"] = dom_storage_service
@@ -100,6 +113,16 @@ def create_app() -> Flask:
     app.config["redis_service"] = redis_service
     app.config["generate_steps_orchestrator"] = GenerateStepsOrchestrator(
         workflow=generate_steps_workflow,
+        workflow_event_service=workflow_event_service,
+        workflow_state_service=workflow_state_service
+    )
+    app.config["generate_steps_orchestrator"] = GenerateStepsOrchestrator(
+        workflow=generate_steps_workflow,
+        workflow_event_service=workflow_event_service,
+        workflow_state_service=workflow_state_service
+    )
+    app.config["guided_execution_orchestrator"] = GuidedExecutionOrchestrator(
+        workflow=guided_execution_workflow,
         workflow_event_service=workflow_event_service,
         workflow_state_service=workflow_state_service
     )

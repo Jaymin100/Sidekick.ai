@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Dict, List, Optional
 
 import serpapi
@@ -50,7 +51,9 @@ class GoogleAiModeClient:
             "query": query,
             "subsequent_request_token": payload.get("subsequent_request_token"),
             "text_blocks": self._extract_text_blocks(payload),
-            "reconstructed_markdown": payload.get("reconstructed_markdown", "") or "",
+            "reconstructed_markdown": self._strip_references_section(
+                payload.get("reconstructed_markdown", "")
+            ) or "",
             "references": self._extract_references(payload),
             "related_questions": self._extract_related_questions(payload),
             "raw_response": payload,
@@ -141,4 +144,21 @@ class GoogleAiModeClient:
             }
             for item in payload.get("related_questions", [])
         ]
+
+    def _strip_references_section(self, markdown: str) -> str:
+        if not markdown:
+            return ""
+
+        # Removes everything from a "### References" header to the end
+        cleaned = re.sub(
+            r"\n+#{1,6}\s+References\s*$.*",
+            "",
+            markdown,
+            flags=re.IGNORECASE | re.DOTALL | re.MULTILINE,
+        )
+
+        # Optional: also remove inline citation markers like [11] [12]
+        cleaned = re.sub(r"(?:\s*\[\d+\])+", "", cleaned)
+
+        return cleaned.strip()
     

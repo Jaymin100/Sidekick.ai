@@ -19,6 +19,7 @@ class ParseAndSerializeDomNode(BaseNode[GuidedExecutionWorkflowState]):
         self,
         state: GuidedExecutionWorkflowState,
     ) -> GuidedExecutionWorkflowState:
+        print("[PARSE_AND_SERIALIZE_DOM] start")
         parsed_dom_content = self.dom_parser.parse(
             raw_dom=state.get(GuidedExecutionStateKey.DOM_CONTENT)
         )
@@ -26,6 +27,8 @@ class ParseAndSerializeDomNode(BaseNode[GuidedExecutionWorkflowState]):
         serialized_dom_content = self.dom_serializer.serialize(
            root=parsed_dom_content
         )
+
+        print(f"[SERIALIZED DOM CONTENT] {serialized_dom_content}")
 
         state.update({
             GuidedExecutionStateKey.SERIALIZED_DOM_CONTENT : serialized_dom_content

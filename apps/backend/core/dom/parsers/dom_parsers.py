@@ -5,12 +5,10 @@ from typing import Optional
 from uuid import uuid4
 
 from apps.backend.core.dom.models.normalized_node import NormalizedNode
-
 from apps.backend.core.dom.constants.tags import (
     IGNORED_TAGS,
-    INTERACTIVE_TAGS
+    INTERACTIVE_TAGS,
 )
-
 from apps.backend.core.dom.constants.attributes import IMPORTANT_ATTRIBUTES
 from apps.backend.core.dom.constants.roles import INTERACTIVE_ROLES
 
@@ -22,11 +20,14 @@ def normalize_whitespace(text: str) -> str:
 class DomParser:
     def parse(self, raw_dom: str) -> Optional[NormalizedNode]:
         soup = BeautifulSoup(raw_dom, "html.parser")
-
         root = soup.body if soup.body else soup
-        return self._parse_node(root)
+        return self._parse_node(root, parent_selector=None)
 
-    def _parse_node(self, node) -> Optional[NormalizedNode]:
+    def _parse_node(
+        self,
+        node,
+        parent_selector: Optional[str],
+    ) -> Optional[NormalizedNode]:
         if isinstance(node, NavigableString):
             text = normalize_whitespace(str(node))
             if not text:
@@ -41,6 +42,8 @@ class DomParser:
                 attributes={},
                 visible=True,
                 interactive=False,
+                css_selector=None,
+                dom_id=None,
                 children=[],
             )
 
@@ -58,10 +61,15 @@ class DomParser:
         accessible_name = self._extract_accessible_name(node)
         interactive = self._is_interactive(node)
         visible = self._is_probably_visible(node)
+        dom_id = node.attrs.get("id")
+        css_selector = self._build_selector(node, parent_selector)
 
         children = []
         for child in node.children:
-            parsed_child = self._parse_node(child)
+            parsed_child = self._parse_node(
+                child,
+                parent_selector=css_selector,
+            )
             if parsed_child is not None:
                 children.append(parsed_child)
 
@@ -74,6 +82,8 @@ class DomParser:
             attributes=attributes,
             visible=visible,
             interactive=interactive,
+            css_selector=css_selector,
+            dom_id=str(dom_id) if dom_id else None,
             children=children,
         )
 
@@ -153,6 +163,52 @@ class DomParser:
             return False
 
         return True
+
+    def _build_selector(
+        self,
+        node: Tag,
+        parent_selector: Optional[str],
+    ) -> Optional[str]:
+        node_id = node.attrs.get("id")
+        if node_id:
+            return f"#{node_id}"
+
+        data_testid = node.attrs.get("data-testid")
+        if data_testid:
+            return f'[data-testid="{data_testid}"]'
+
+        data_test = node.attrs.get("data-test")
+        if data_test:
+            return f'[data-test="{data_test}"]'
+
+        data_cy = node.attrs.get("data-cy")
+        if data_cy:
+            return f'[data-cy="{data_cy}"]'
+
+        name = node.attrs.get("name")
+        if name and node.name.lower() in {"input", "textarea", "select", "button"}:
+            return f'{node.name}[name="{name}"]'
+
+        nth = self._nth_of_type(node)
+        current = f"{node.name}:nth-of-type({nth})"
+
+        if parent_selector:
+            return f"{parent_selector} > {current}"
+
+        return current
+
+    def _nth_of_type(self, node: Tag) -> int:
+        if node.parent is None:
+            return 1
+
+        count = 0
+        for sibling in node.parent.children:
+            if isinstance(sibling, Tag) and sibling.name == node.name:
+                count += 1
+                if sibling is node:
+                    return count
+
+        return 1
 
     def _new_id(self) -> str:
         return f"node_{uuid4().hex[:8]}"

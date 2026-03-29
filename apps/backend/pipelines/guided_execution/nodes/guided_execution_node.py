@@ -15,6 +15,14 @@ class GuidedExecutionNode(BaseNode[GuidedExecutionWorkflowState]):
         self,
         state: GuidedExecutionWorkflowState,
     ) -> GuidedExecutionWorkflowState:
+        print("[GUIDED EXECUTION AGENT] start")
+
+        user_intent = state.get(GuidedExecutionStateKey.USER_INTENT)
+        task_summary = state.get(GuidedExecutionStateKey.TASK_SUMMARY)
+        web_reconstructed_markdown = state.get(GuidedExecutionStateKey.WEB_RECONSTRUCTURED_MARKDOWN)
+
+        print(f"[GUIDED_EXECUTION][INPUT_VALUES] user_intent={user_intent}, task_summary={task_summary}, web_reconstructed_markdown={web_reconstructed_markdown}")
+
         result = self.agent.run(
             GuidedExecutionInput (
                 user_intent=state.get(GuidedExecutionStateKey.USER_INTENT),

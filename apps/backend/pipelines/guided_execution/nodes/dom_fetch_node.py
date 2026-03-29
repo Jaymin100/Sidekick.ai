@@ -16,12 +16,13 @@ class DomFetchNode(BaseNode[GuidedExecutionWorkflowState]):
         self,
         state: GuidedExecutionWorkflowState,
     ) -> GuidedExecutionWorkflowState:
-        dom_content = self.dom_storage_service.read_dom(
+        print("[DOM_FETCH] start")
+        dom_result = self.dom_storage_service.read_dom(
             object_key=state.get(GuidedExecutionStateKey.DOM_OBJECT_KEY)
         )
 
         state.update({
-            GuidedExecutionStateKey.DOM_CONTENT : dom_content
+            GuidedExecutionStateKey.DOM_CONTENT : dom_result["bytes"]
         })
 
         return state

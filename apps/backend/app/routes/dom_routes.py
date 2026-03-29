@@ -79,44 +79,13 @@ def submit_dom_content():
     if not object_key:
         return jsonify({"error": "object_key is required"}), 400
 
-    return jsonify({
-        "workflow_id": workflow_id,
-        "status": "in_progress",
-        "next_action": {
-            "step_id": "step-1",
-            "instruction": "Dummy action for testing",
-            "action_type": "highlight",
-            "element": "a"
-        },
-    }), 200
+    guided_execution_orchestrator = current_app.config["guided_execution_orchestrator"]
 
-@dom_bp.post("/update")
-def submit_dom_update():
-    data = request.get_json(silent=True) or {}
+    result = guided_execution_orchestrator.run(
+        workflow_id=workflow_id,
+        dom_object_key=object_key,
+        site_url=site_url,
+        page_title=page_title,
+    )
 
-    workflow_id = data.get("workflow_id")
-    event = data.get("event")
-    site_url = data.get("site_url")
-    page_title = data.get("page_title")
-    object_key = data.get("object_key")
-
-    if not workflow_id:
-        return jsonify({"error": "workflow_id is required"}), 400
-    if not event:
-        return jsonify({"error": "event is required"}), 400
-    if not site_url:
-        return jsonify({"error": "site_url is required"}), 400
-    if not page_title:
-        return jsonify({"error": "page_title is required"}), 400
-    if not object_key:
-        return jsonify({"error": "object_key is required"}), 400
-
-    return jsonify({
-        "workflow_id": workflow_id,
-        "status": "in_progress",
-        "next_action": {
-            "step_id": "step-2",
-            "instruction": "Next dummy action for testing",
-            "action_type": "click",
-        },
-    }), 200
+    return jsonify(result), 200

@@ -55,16 +55,15 @@ class GenerateStepsOrchestrator:
             result_state = await self.compiled_workflow.ainvoke(initial_state)
 
             print(f"[GENERATE_STEPS][SUCCESS] workflow_id={workflow_id}")
-            print(f"[GENERATE_STEPS][RESULT] {result_state}")
+
+            web_search_result = result_state.get(GenerateStepsStateKey.WEB_SEARCH_RESULT)
 
             persisted_state = {
                 GenerateStepsStateKey.SITE_URL: result_state.get(GenerateStepsStateKey.SITE_URL),
                 GenerateStepsStateKey.PAGE_TITLE: result_state.get(GenerateStepsStateKey.PAGE_TITLE),
                 GenerateStepsStateKey.USER_INTENT: result_state.get(GenerateStepsStateKey.USER_INTENT),
                 GenerateStepsStateKey.TASK_SUMMARY: result_state.get(GenerateStepsStateKey.TASK_SUMMARY),
-                GuidedExecutionStateKey.WEB_RECONSTRUCTURED_MARKDOWN: result_state.get(
-                    GuidedExecutionStateKey.WEB_RECONSTRUCTURED_MARKDOWN
-                )
+                GuidedExecutionStateKey.WEB_RECONSTRUCTURED_MARKDOWN: web_search_result["reconstructed_markdown"]
             }
 
             print(f"[GENERATE_STEPS][PERSIST] workflow_id={workflow_id}")
@@ -85,7 +84,7 @@ class GenerateStepsOrchestrator:
 
         except Exception as exc:
             print(f"[GENERATE_STEPS][ERROR] workflow_id={workflow_id} | error={str(exc)}")
-            
+
             self.workflow_state_service.update_workflow_state(
                 workflow_id=workflow_id,
                 updates={

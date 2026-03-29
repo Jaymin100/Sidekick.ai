@@ -6,7 +6,7 @@ from apps.backend.agents.guided_execution_agent.output_schema import GuidedExecu
 from apps.backend.core.utils.prompt_builder import PromptBuilder
 from apps.backend.agents.guided_execution_agent.examples import EXAMPLES
 from apps.backend.agents.guided_execution_agent.prompts.system_prompt import SYSTEM_PROMPT
-from apps.backend.agents.gudied_execution_agent.prompts.user_prompt import USER_PROMPT
+from apps.backend.agents.guided_execution_agent.prompts.user_prompt import USER_PROMPT
 
 class GuidedExecutionAgent(
       BaseAgent[GuidedExecutionInput, GuidedExecutionOutput]

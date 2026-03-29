@@ -16,6 +16,7 @@ class TranscriptToSpeechNode(BaseNode[GuidedExecutionWorkflowState]):
         self,
         state: GuidedExecutionWorkflowState,
     ) -> GuidedExecutionWorkflowState:
+        print("[TRANSCRIPT_TO_SPEECH] start")
         audio_bytes = self.tts_service.synthesize(
             text=state.get(GuidedExecutionStateKey.TRANSCRIPT)
         )

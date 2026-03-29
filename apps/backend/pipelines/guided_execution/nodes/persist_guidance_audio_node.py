@@ -19,6 +19,7 @@ class PersistGuidanceAudioNode(BaseNode[GuidedExecutionWorkflowState]):
         self,
         state: GuidedExecutionWorkflowState,
     ) -> GuidedExecutionWorkflowState:
+        print("[PERSIST_GUIDANCE_AUDIO] start")
         audio_bytes = state.get(GuidedExecutionStateKey.AUDIO_BYTES)
 
         mime_type = "audio/mpeg"

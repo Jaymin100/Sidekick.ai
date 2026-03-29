@@ -12,4 +12,6 @@ class NormalizedNode:
     attributes: Dict[str, Any] = field(default_factory=dict)
     visible: bool = True
     interactive: bool = False
+    css_selector: Optional[str] = None
+    dom_id: Optional[str] = None
     children: List["NormalizedNode"] = field(default_factory=list)
