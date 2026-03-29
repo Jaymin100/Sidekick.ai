@@ -35,6 +35,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   /** Tab that was active when the user sent /task/generate (used for DOM snapshot + SSE). */
   let workflowTargetTabId = null;
+  /** Canonical workflow id for the current run; forwarded to extension worker. */
+  let activeWorkflowId = null;
 
   /**
    * Normalize status text from backend/SSE.
@@ -51,15 +53,50 @@ document.addEventListener("DOMContentLoaded", () => {
    * @param {number | undefined} [preferredTabId] — same tab as page_url for /task/generate
    */
   function forwardWorkflowStatusToWorker(payload, preferredTabId) {
+    const nested =
+      payload.data && typeof payload.data === "object"
+        ? /** @type {Record<string, unknown>} */ (payload.data)
+        : null;
+    const normalized = normalizeWorkflowStatus(
+      payload.status ?? payload.workflow_status ?? nested?.status ?? nested?.workflow_status,
+    );
+    if (normalized !== "awaiting_dom") return;
+    console.log("[SidekickTrace] sidepanel:awaiting_dom_event", {
+      status: payload.status ?? payload.workflow_status,
+      payload_workflow_id: payload.workflow_id ?? payload.workflowId ?? null,
+      active_workflow_id: activeWorkflowId,
+      preferredTabId: preferredTabId ?? null,
+    });
     const useTab = (tabId) => {
       if (tabId == null) {
         console.warn("[Sidekick] WORKFLOW_STATUS: no tab — DOM snapshot cannot run");
         return;
       }
+      const workflowId =
+        payload.workflow_id != null
+          ? String(payload.workflow_id)
+          : payload.workflowId != null
+            ? String(payload.workflowId)
+            : nested?.workflow_id != null
+              ? String(nested.workflow_id)
+              : nested?.workflowId != null
+                ? String(nested.workflowId)
+                : activeWorkflowId;
+      if (!workflowId) {
+        console.warn("[Sidekick] WORKFLOW_STATUS: awaiting_dom without workflow_id");
+        return;
+      }
+      console.log("[SidekickTrace] sidepanel:send_WORKFLOW_STATUS", {
+        tabId,
+        workflow_id: workflowId,
+      });
       chrome.runtime.sendMessage({
         type: "WORKFLOW_STATUS",
         tabId,
-        payload,
+        payload: {
+          workflow_id: workflowId,
+          status: "awaiting_dom",
+        },
       }).catch((e) => console.warn("[Sidekick] WORKFLOW_STATUS → worker failed", e));
     };
 
@@ -86,9 +123,9 @@ document.addEventListener("DOMContentLoaded", () => {
   function applyDemoStatusUi(status) {
     const s = normalizeWorkflowStatus(status);
     if (!s) return;
-    if (s === "completed" || s === "cancelled") {
+    if (s === "completed" || s === "failed") {
       setWorkflowTerminal(s);
-      if (s === "completed") {
+      if (s === "completed" || s === "failed") {
         closeWorkflowStream();
       }
       return;
@@ -101,9 +138,15 @@ document.addEventListener("DOMContentLoaded", () => {
    */
   function handleWorkflowEvent(payload) {
     console.log("[SSE] workflow update", payload);
+    const nested =
+      payload.data && typeof payload.data === "object"
+        ? /** @type {Record<string, unknown>} */ (payload.data)
+        : null;
+    const effectiveStatus =
+      payload.status ?? payload.workflow_status ?? nested?.status ?? nested?.workflow_status;
 
     forwardWorkflowStatusToWorker(payload, workflowTargetTabId ?? undefined);
-    applyDemoStatusUi(payload.status ?? payload.workflow_status);
+    applyDemoStatusUi(effectiveStatus);
 
     if (Array.isArray(payload.steps) && payload.steps.length > 0) {
       startOnboarding({
@@ -124,8 +167,8 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    if (typeof payload.status === "string" || typeof payload.status === "number") {
-      statusText.textContent = String(payload.status);
+    if (typeof effectiveStatus === "string" || typeof effectiveStatus === "number") {
+      statusText.textContent = String(effectiveStatus);
     }
     if (typeof payload.message === "string") {
       stepInfo.textContent = payload.message;
@@ -344,6 +387,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const pageTitle = activeTab?.title ?? "";
       const targetTabId = activeTab?.id;
       workflowTargetTabId = targetTabId ?? null;
+      if (typeof targetTabId === "number") {
+        chrome.tabs.sendMessage(targetTabId, { type: "RESET_DOM_LOOP_STATE" }).catch(() => {});
+      }
 
       const generateBody = {
         site_url: pageUrl,
@@ -401,14 +447,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // awaiting_dom → REQUEST_DOM_SNAPSHOT runs in the service worker after /task/generate (same tabId as site_url).
 
       const workflowId = data.workflow_id ?? data.workflowId;
-      const initialStatus = data.status;
+      console.log("[SidekickTrace] sidepanel:task_generate_response", {
+        workflow_id: workflowId ?? null,
+        status: data.status ?? null,
+        targetTabId: targetTabId ?? null,
+      });
 
-      if (initialStatus != null) {
-        statusText.textContent = String(initialStatus);
-        applyDemoStatusUi(initialStatus);
-      } else {
-        setWorkflowPending();
-      }
+      // /task/generate is fire-and-forget: treat response as queued and wait for SSE statuses.
+      setWorkflowPending();
 
       if (Array.isArray(data.steps) && data.steps.length > 0) {
         startOnboarding(data);
@@ -418,6 +464,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (workflowId) {
+        activeWorkflowId = String(workflowId);
         currentTask = { ...data, workflow_id: workflowId };
         openWorkflowStream(workflowId);
       } else if (!Array.isArray(data.steps) || data.steps.length === 0) {
@@ -542,6 +589,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function resetState() {
     closeWorkflowStream();
     workflowTargetTabId = null;
+    activeWorkflowId = null;
     steps = [];
     currentStep = 0;
     transcript = "";
@@ -578,7 +626,7 @@ document.addEventListener("DOMContentLoaded", () => {
    * @param {string} status
    */
   function setWorkflowTerminal(status) {
-    statusText.textContent = status === "completed" ? "completed" : "cancelled";
+    statusText.textContent = status === "completed" ? "completed" : "failed";
     startBtn.style.display = "inline-block";
     startBtn.disabled = false;
     listeningControls.style.display = "none";

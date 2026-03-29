@@ -58,6 +58,11 @@ let lastHighlightForcedPosition = false;
 let currentAudio = null;
 let isWorkflowTerminal = false;
 let terminalStatusLogged = false;
+let isDomSnapshotInFlight = false;
+let domContentSequence = 0;
+let activeWorkflowId = null;
+let isAwaitingDomLoopActive = false;
+let interactionCaptureTimer = null;
 
 /**
  * @param {unknown} status
@@ -74,7 +79,7 @@ function normalizeStatus(status) {
  */
 function isTerminalStatus(status) {
   const s = normalizeStatus(status);
-  return s === "cancelled" || s === "completed";
+  return s === "completed" || s === "failed";
 }
 
 /**
@@ -83,6 +88,7 @@ function isTerminalStatus(status) {
 function markTerminalIfNeeded(status) {
   if (!isTerminalStatus(status)) return;
   isWorkflowTerminal = true;
+  isAwaitingDomLoopActive = false;
   if (!terminalStatusLogged) {
     terminalStatusLogged = true;
     console.log("[Sidekick] Terminal status reached — stopping backend communication.", {
@@ -157,15 +163,16 @@ async function uploadDomToBackend(html, pageUrl) {
 
 /**
  * Register stored DOM (`object_key` from `/dom/upload`). `workflow_id` included when set.
- * @param {{ object_key: string | null, workflow_id?: string | null, page_title: string, site_url: string }} body
+ * @param {{ object_key: string | null, workflow_id?: string | null, page_title: string, site_url: string, dom_seq: number }} body
  * @returns {Promise<Record<string, unknown> | null>}
  */
 async function postDomContent(body) {
-  /** @type {Record<string, string>} */
+  /** @type {Record<string, unknown>} */
   const payload = {
     object_key: body.object_key ?? "",
     page_title: body.page_title,
     site_url: body.site_url,
+    dom_seq: body.dom_seq,
   };
   if (body.workflow_id != null && body.workflow_id !== "") {
     payload.workflow_id = String(body.workflow_id);
@@ -192,53 +199,109 @@ async function postDomContent(body) {
  * @param {{ workflow_id?: string, workflowId?: string }} [meta]
  */
 async function captureAndRegisterDom(meta = {}) {
-  if (isWorkflowTerminal) return;
-  const html = getFullDOM();
-  const pageUrl = location.href;
-  const page_title = document.title;
-  const uploaded = await uploadDomToBackend(html, pageUrl);
-  if (!uploaded.ok) {
-    console.warn("[Sidekick] dom/upload failed:", uploaded.error);
-    return;
-  }
-  if (!uploaded.object_key) {
-    console.warn("[Sidekick] dom/upload OK but no object_key — skipping /dom/content.");
-    return;
-  }
-  const wfFromMeta =
+  if (isWorkflowTerminal || isDomSnapshotInFlight) return;
+  isDomSnapshotInFlight = true;
+  const wfHint =
     meta.workflow_id != null
       ? String(meta.workflow_id)
       : meta.workflowId != null
         ? String(meta.workflowId)
         : null;
-  const wf = wfFromMeta ?? uploaded.workflow_id;
-  const contentResponse = await postDomContent({
-    object_key: uploaded.object_key,
-    workflow_id: wf ?? undefined,
-    page_title,
-    site_url: pageUrl,
+  console.log("[SidekickTrace] content:capture_start", {
+    workflow_id: wfHint ?? activeWorkflowId ?? null,
+    dom_seq_next: domContentSequence + 1,
   });
-  if (contentResponse) {
-    const nextAction =
-      contentResponse.next_action &&
-      typeof contentResponse.next_action === "object" &&
-      !Array.isArray(contentResponse.next_action)
-        ? /** @type {Record<string, unknown>} */ (contentResponse.next_action)
-        : null;
-    applyAction({
-      element_id:
-        nextAction?.element_id ??
-        nextAction?.element ??
-        contentResponse.element_id ??
-        contentResponse.element,
-      audio_object_key:
-        nextAction?.audio_object_key ??
-        nextAction?.audioKey ??
-        contentResponse.audio_object_key ??
-        contentResponse.audioKey,
-      status: contentResponse.status,
+  const html = getFullDOM();
+  const pageUrl = location.href;
+  const page_title = document.title;
+  try {
+    const uploaded = await uploadDomToBackend(html, pageUrl);
+    if (!uploaded.ok) {
+      console.warn("[Sidekick] dom/upload failed:", uploaded.error);
+      return;
+    }
+    if (!uploaded.object_key) {
+      console.warn("[Sidekick] dom/upload OK but no object_key — skipping /dom/content.");
+      return;
+    }
+    const wf =
+      meta.workflow_id != null
+        ? String(meta.workflow_id)
+        : meta.workflowId != null
+          ? String(meta.workflowId)
+          : null;
+    if (wf && activeWorkflowId !== wf) {
+      activeWorkflowId = wf;
+      domContentSequence = 0;
+    }
+    domContentSequence += 1;
+    const contentResponse = await postDomContent({
+      object_key: uploaded.object_key,
+      workflow_id: wf ?? undefined,
+      page_title,
+      site_url: pageUrl,
+      dom_seq: domContentSequence,
     });
-    console.log("[Sidekick] DOM snapshot pipeline finished (/dom/upload then /dom/content).");
+    if (contentResponse) {
+      const responseStatus = normalizeStatus(contentResponse.status);
+      if (responseStatus === "awaiting_dom") {
+        isAwaitingDomLoopActive = true;
+      } else if (isTerminalStatus(responseStatus)) {
+        isAwaitingDomLoopActive = false;
+      }
+      const nextAction =
+        contentResponse.next_action &&
+        typeof contentResponse.next_action === "object" &&
+        !Array.isArray(contentResponse.next_action)
+          ? /** @type {{ element_id?: unknown, audio_object_key?: unknown }} */ (contentResponse.next_action)
+          : null;
+      applyAction({
+        element_id: nextAction?.element_id ?? contentResponse.element_id,
+        audio_object_key: nextAction?.audio_object_key ?? contentResponse.audio_object_key,
+        status: contentResponse.status,
+      });
+      console.log("[Sidekick] DOM snapshot pipeline finished.", {
+        workflow_id: wf ?? null,
+        dom_seq: domContentSequence,
+      });
+    }
+  } finally {
+    isDomSnapshotInFlight = false;
+  }
+}
+
+/**
+ * Queue next DOM snapshot only when user clicks the highlighted target.
+ * @param {Event} event
+ */
+function scheduleCaptureFromUserInteraction(event) {
+  if (!isAwaitingDomLoopActive || isWorkflowTerminal) return;
+  if (!lastHighlighted) return;
+  const t = event.target;
+  if (!(t instanceof Node)) return;
+  if (!lastHighlighted.contains(t)) return;
+  if (interactionCaptureTimer != null) {
+    clearTimeout(interactionCaptureTimer);
+  }
+  // Debounce bursts of DOM events from a single user action.
+  interactionCaptureTimer = setTimeout(() => {
+    interactionCaptureTimer = null;
+    if (!isAwaitingDomLoopActive || isWorkflowTerminal) return;
+    if (!activeWorkflowId) return;
+    void captureAndRegisterDom({ workflow_id: activeWorkflowId });
+  }, 350);
+}
+
+function resetDomLoopState() {
+  isAwaitingDomLoopActive = false;
+  isDomSnapshotInFlight = false;
+  domContentSequence = 0;
+  activeWorkflowId = null;
+  isWorkflowTerminal = false;
+  terminalStatusLogged = false;
+  if (interactionCaptureTimer != null) {
+    clearTimeout(interactionCaptureTimer);
+    interactionCaptureTimer = null;
   }
 }
 
@@ -351,6 +414,8 @@ function notifyPanelNotFound() {
   chrome.runtime.sendMessage({ type: "PANEL_ELEMENT_NOT_FOUND" }).catch(() => {});
 }
 
+document.addEventListener("click", scheduleCaptureFromUserInteraction, true);
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PING_SIDEKICK") {
     if (sendResponse) sendResponse({ ok: true });
@@ -389,10 +454,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "REQUEST_DOM_SNAPSHOT") {
     const wf = message.workflow_id ?? message.workflowId;
+    console.log("[SidekickTrace] content:received_REQUEST_DOM_SNAPSHOT", {
+      workflow_id: wf ?? null,
+    });
+    isAwaitingDomLoopActive = false;
+    if (wf != null) {
+      activeWorkflowId = String(wf);
+      domContentSequence = 0;
+    }
     console.log("[Sidekick] REQUEST_DOM_SNAPSHOT — capturing DOM for backend POST");
     void captureAndRegisterDom({
       workflow_id: wf != null ? String(wf) : undefined,
     });
+    if (sendResponse) sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "RESET_DOM_LOOP_STATE") {
+    resetDomLoopState();
     if (sendResponse) sendResponse({ ok: true });
     return false;
   }

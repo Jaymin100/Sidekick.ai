@@ -6,6 +6,53 @@
  */
 
 const API_BASE = "http://10.101.16.249:5001";
+const DOM_REQUEST_TIMEOUT_MS = 10000;
+
+/**
+ * @param {string} path
+ * @param {Record<string, unknown>} body
+ * @param {number} timeoutMs
+ * @returns {Promise<{ ok: boolean, status: number, data: Record<string, unknown> }>}
+ */
+async function postJsonWithTimeout(path, body, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data: isRecord(data) ? data : {} };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * @param {"/dom/upload" | "/dom/content"} path
+ * @param {Record<string, unknown>} body
+ * @returns {Promise<{ ok: boolean, status: number, data: Record<string, unknown>, error?: string }>}
+ */
+async function postDomWithRetry(path, body) {
+  try {
+    const first = await postJsonWithTimeout(path, body, DOM_REQUEST_TIMEOUT_MS);
+    if (first.ok) return first;
+    if (first.status < 500 && first.status !== 408 && first.status !== 429) return first;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return postJsonWithTimeout(path, body, DOM_REQUEST_TIMEOUT_MS);
+  } catch (err) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      return await postJsonWithTimeout(path, body, DOM_REQUEST_TIMEOUT_MS);
+    } catch (retryErr) {
+      const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      return { ok: false, status: 0, data: {}, error: msg };
+    }
+  }
+}
 
 function enableSidePanelOnActionClick() {
   if (!chrome.sidePanel?.setPanelBehavior) return;
@@ -81,15 +128,29 @@ function extractStatusFromPayload(payload) {
 function maybeRequestDomSnapshot(tabId, payload) {
   const st = extractStatusFromPayload(payload);
   if (!isAwaitingDomStatus(st)) return;
-  if (tabId == null) {
-    console.warn("[Sidekick] awaiting_dom but no tabId — cannot message content script");
-    return;
-  }
   const p = payload && typeof payload === "object" ? payload : {};
   const wf = p.workflow_id ?? p.workflowId;
   const dk = p.dom_object_key ?? p.domObjectKey;
   const workflowId = wf != null ? String(wf) : undefined;
   const domObjectKey = dk != null ? String(dk) : undefined;
+  if (tabId == null) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const resolvedTabId = tabs[0]?.id;
+      if (typeof resolvedTabId !== "number") {
+        console.warn("[Sidekick] awaiting_dom but no active tab — cannot message content script");
+        return;
+      }
+      console.log("[Sidekick] awaiting_dom → REQUEST_DOM_SNAPSHOT (resolved active tab)", {
+        tabId: resolvedTabId,
+        workflowId,
+      });
+      void sendDomSnapshotRequest(resolvedTabId, {
+        workflow_id: workflowId,
+        dom_object_key: domObjectKey,
+      });
+    });
+    return;
+  }
   console.log("[Sidekick] awaiting_dom → REQUEST_DOM_SNAPSHOT", { tabId, workflowId });
   void sendDomSnapshotRequest(tabId, {
     workflow_id: workflowId,
@@ -176,18 +237,8 @@ function getDemoActionPayload(data) {
       ? /** @type {Record<string, unknown>} */ (data.next_action)
       : null;
 
-  const rawElement =
-    data.element_id ??
-    data.element ??
-    data.selector ??
-    nextAction?.element_id ??
-    nextAction?.element ??
-    nextAction?.selector;
-  const rawAudio =
-    data.audio_object_key ??
-    data.audioKey ??
-    nextAction?.audio_object_key ??
-    nextAction?.audioKey;
+  const rawElement = nextAction?.element_id;
+  const rawAudio = nextAction?.audio_object_key;
   const rawStatus = extractStatusFromPayload(data);
 
   const action = {};
@@ -227,9 +278,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: false, error: `HTTP ${res.status}`, data });
           return;
         }
-        if (isRecord(data)) {
-          maybeRequestDomSnapshot(tabId, data);
-        }
         sendResponse({ ok: true, data });
       })
       .catch((e) => {
@@ -245,6 +293,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.payload && typeof message.payload === "object"
         ? /** @type {Record<string, unknown>} */ (message.payload)
         : null;
+    console.log("[SidekickTrace] worker:received_WORKFLOW_STATUS", {
+      tabId: tabId ?? null,
+      status: payload?.status ?? payload?.workflow_status ?? null,
+      workflow_id: payload?.workflow_id ?? payload?.workflowId ?? null,
+    });
     maybeRequestDomSnapshot(tabId, payload);
     sendResponse({ ok: true });
     return false;
@@ -256,34 +309,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
    */
   if (message?.type === "BG_DOM_UPLOAD") {
     const body = message.payload && typeof message.payload === "object" ? message.payload : {};
-    fetch(`${API_BASE}/dom/upload`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
+    console.log("[SidekickTrace] worker:BG_DOM_UPLOAD_request", {
+      workflow_id: body.workflow_id ?? body.workflowId ?? null,
+      pageUrl: body.pageUrl ?? null,
+    });
+    postDomWithRetry("/dom/upload", body)
+      .then((result) => {
+        if (!result.ok) {
           sendResponse({
             ok: false,
-            error: typeof data?.error === "string" ? data.error : `HTTP ${res.status}`,
+            error:
+              typeof result.data?.error === "string"
+                ? result.data.error
+                : result.error ?? `HTTP ${result.status}`,
           });
           return;
         }
-        const object_key =
-          data.object_key != null
-            ? String(data.object_key)
-            : data.objectKey != null
-              ? String(data.objectKey)
-              : null;
+        const object_key = result.data.object_key != null ? String(result.data.object_key) : null;
+        const fallbackObjectKey =
+          result.data.objectKey != null ? String(result.data.objectKey) : null;
         const workflow_id =
-          data.workflow_id != null
-            ? String(data.workflow_id)
-            : data.workflowId != null
-              ? String(data.workflowId)
+          result.data.workflow_id != null
+            ? String(result.data.workflow_id)
+            : result.data.workflowId != null
+              ? String(result.data.workflowId)
               : null;
-        console.log("[Sidekick] /dom/upload response JSON:", data);
-        sendResponse({ ok: true, object_key, workflow_id, response: data });
+        console.log("[Sidekick] /dom/upload response JSON:", result.data);
+        sendResponse({ ok: true, object_key: object_key ?? fallbackObjectKey, workflow_id, response: result.data });
       })
       .catch((e) => {
         sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -293,20 +345,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "BG_DOM_CONTENT") {
     const body = message.payload && typeof message.payload === "object" ? message.payload : {};
-    fetch(`${API_BASE}/dom/content`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const msg = typeof data?.error === "string" ? data.error : `HTTP ${res.status}`;
-          sendResponse({ ok: false, error: msg, response: data });
+    console.log("[SidekickTrace] worker:BG_DOM_CONTENT_request", {
+      workflow_id: body.workflow_id ?? body.workflowId ?? null,
+      object_key: body.object_key ?? body.objectKey ?? null,
+      dom_seq: body.dom_seq ?? null,
+    });
+    postDomWithRetry("/dom/content", body)
+      .then((result) => {
+        if (!result.ok) {
+          const msg =
+            typeof result.data?.error === "string"
+              ? result.data.error
+              : result.error ?? `HTTP ${result.status}`;
+          sendResponse({ ok: false, error: msg, response: result.data });
           return;
         }
-        console.log("[Sidekick] /dom/content response JSON:", data);
-        sendResponse({ ok: true, response: data });
+        console.log("[Sidekick] /dom/content response JSON:", result.data);
+        sendResponse({ ok: true, response: result.data });
       })
       .catch((e) => {
         sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
