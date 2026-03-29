@@ -1,0 +1,5 @@
+DOM_FETCH = "dom_fetch"
+PARSE_AND_SERIALIZE_DOM = "parse_and_serialize_dom"
+GUIDED_EXECUTION = "guided_execution"
+TRANSCRIPT_TO_SPEECH = "transcript_to_speech"
+PERSIST_GUIDANCE_AUDIO = "persist_guidance_audio"

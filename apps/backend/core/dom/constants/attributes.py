@@ -1,0 +1,17 @@
+IMPORTANT_ATTRIBUTES = {
+    "id",
+    "class",
+    "name",
+    "type",
+    "href",
+    "title",
+    "placeholder",
+    "value",
+    "role",
+    "aria-label",
+    "aria-labelledby",
+    "aria-describedby",
+    "data-testid",
+    "data-test",
+    "data-cy",
+}
