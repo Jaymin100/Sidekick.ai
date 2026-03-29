@@ -1,8 +1,6 @@
 from infra.minio.services.storage_service import StorageService
 from infra.minio.constants.dom import (
     DOM_BUCKET,
-    DEFAULT_DOM_SNAPSHOT_NAME,
-    DOM_FILE_EXTENSION,
     DOM_CONTENT_TYPE,
 )
 
@@ -45,4 +43,25 @@ class DomStorageService:
             "bucket": DOM_BUCKET,
             "object_key": object_key,
             "content_type": DOM_CONTENT_TYPE,
+        }
+    
+    def read_dom(
+    self,
+    object_key: str,
+    ) -> dict:
+        response = self.storage.get_object(
+            bucket_name=DOM_BUCKET,
+            object_key=object_key,
+        )
+
+        try:
+            dom_bytes = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+        return {
+            "bucket": DOM_BUCKET,
+            "object_key": object_key,
+            "bytes": dom_bytes
         }

@@ -3,6 +3,8 @@ import tempfile
 import os
 from uuid import uuid4
 
+from apps.backend.test_audio_pipeline import TestAudioPipeline
+
 audio_bp = Blueprint("audio", __name__, url_prefix="/audio")
 
 @audio_bp.post("/upload")
@@ -11,7 +13,7 @@ def upload_audio():
 
     if not file:
         return jsonify({"error": "file is required"}), 400
-    
+
     audio_service = current_app.config["audio_storage_service"]
 
     mime_type = file.mimetype or "application/octet-stream"
@@ -24,6 +26,13 @@ def upload_audio():
         file_storage=file,
         mime_type=mime_type,
     )
+
+    try:
+        transcript = TestAudioPipeline.run(object_key)
+        print(f"[TRANSCRIPT] {transcript}")
+    except Exception as exc:
+        print(f"[TRANSCRIPTION ERROR] object_key={object_key} error={exc}")
+
 
     return jsonify(result), 201
 

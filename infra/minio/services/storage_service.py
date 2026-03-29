@@ -49,3 +49,12 @@ class StorageService:
             file_path=file_path,
         )
     
+    def get_object(
+        self,
+        bucket_name: str,
+        object_key: str,
+    ):
+        return self.client.get_object(
+            bucket_name=bucket_name,
+            object_name=object_key,
+        )

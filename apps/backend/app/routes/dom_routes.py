@@ -3,6 +3,8 @@ from uuid import uuid4
 import tempfile
 import os
 
+from apps.backend.test_dom_pipeline import TestDomPipeline
+
 dom_bp = Blueprint("dom", __name__, url_prefix="/dom")
 
 
@@ -26,6 +28,12 @@ def upload_dom():
             object_key=object_key,
             file_path=temp_file.name,
         )
+
+        try:
+            parsed_content = TestDomPipeline.run(object_key)
+            print(f"[PARSED DOM]\n{parsed_content}")
+        except Exception as exc:
+            print(f"[DOM PROCESSING ERROR] object_key={object_key} error={exc}")
 
         return jsonify(result), 201
     finally:

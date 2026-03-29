@@ -4,7 +4,6 @@ from werkzeug.datastructures import FileStorage
 from infra.minio.services.storage_service import StorageService
 from infra.minio.constants.audio import (
     AUDIO_BUCKET,
-    INPUT_FILENAME,
     MIME_EXTENSION_MAP,
     EXTENSION_MIME_MAP
 )
@@ -59,7 +58,28 @@ class AudioStorageService:
             "filename": filename,
             "mime_type": mime_type,
         }
+    
+    def read_audio(
+        self,
+        object_key: str,
+    ) -> dict:
+        response = self.storage.get_object(
+            bucket_name=AUDIO_BUCKET,
+            object_key=object_key,
+        )
 
+        try:
+            audio_bytes = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+        return {
+            "bucket": AUDIO_BUCKET,
+            "object_key": object_key,
+            "bytes": audio_bytes
+        }
+    
     @staticmethod
     def _extension_from_mime(mime_type: str) -> str:
         return MIME_EXTENSION_MAP.get(mime_type, "bin")
