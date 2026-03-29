@@ -33,18 +33,33 @@ document.addEventListener("DOMContentLoaded", () => {
   /** @type {EventSource | null} */
   let workflowEventSource = null;
 
+  /** Tab that was active when the user sent /task/generate (used for DOM snapshot + SSE). */
+  let workflowTargetTabId = null;
+
   /**
    * @param {Record<string, unknown>} payload
+   * @param {number | undefined} [preferredTabId] — same tab as page_url for /task/generate
    */
-  function forwardWorkflowStatusToWorker(payload) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tabId = tabs[0]?.id;
-      if (tabId == null) return;
+  function forwardWorkflowStatusToWorker(payload, preferredTabId) {
+    const useTab = (tabId) => {
+      if (tabId == null) {
+        console.warn("[Sidekick] WORKFLOW_STATUS: no tab — DOM snapshot cannot run");
+        return;
+      }
       chrome.runtime.sendMessage({
         type: "WORKFLOW_STATUS",
         tabId,
         payload,
-      }).catch(() => {});
+      }).catch((e) => console.warn("[Sidekick] WORKFLOW_STATUS → worker failed", e));
+    };
+
+    if (typeof preferredTabId === "number") {
+      useTab(preferredTabId);
+      return;
+    }
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      useTab(tabId);
     });
   }
 
@@ -61,7 +76,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function handleWorkflowEvent(payload) {
     console.log("[SSE] workflow update", payload);
 
-    forwardWorkflowStatusToWorker(payload);
+    forwardWorkflowStatusToWorker(payload, workflowTargetTabId ?? undefined);
 
     if (Array.isArray(payload.steps) && payload.steps.length > 0) {
       startOnboarding({
@@ -303,6 +318,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const activeTab = tabs[0];
       const pageUrl = activeTab?.url ?? "";
       const pageTitle = activeTab?.title ?? "";
+      const targetTabId = activeTab?.id;
+      workflowTargetTabId = targetTabId ?? null;
 
       const generateBody = {
         site_url: pageUrl,
@@ -316,6 +333,7 @@ document.addEventListener("DOMContentLoaded", () => {
         chrome.runtime.sendMessage(
           {
             type: "BG_TASK_GENERATE",
+            tabId: targetTabId,
             payload: generateBody,
           },
           (response) => {
@@ -356,7 +374,7 @@ document.addEventListener("DOMContentLoaded", () => {
           ? /** @type {Record<string, unknown>} */ (genResponse.data)
           : {};
 
-      forwardWorkflowStatusToWorker(data);
+      // awaiting_dom → REQUEST_DOM_SNAPSHOT runs in the service worker after /task/generate (same tabId as site_url).
 
       const workflowId = data.workflow_id ?? data.workflowId;
       const initialStatus = data.status;
@@ -494,6 +512,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function resetState() {
     closeWorkflowStream();
+    workflowTargetTabId = null;
     steps = [];
     currentStep = 0;
     transcript = "";

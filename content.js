@@ -20,8 +20,29 @@
  */
 
 const API_BASE = "http://10.101.16.249:5001";
-const DOM_UPLOAD_URL = `${API_BASE}/dom/upload`;
-const DOM_CONTENT_URL = `${API_BASE}/dom/content`;
+
+/**
+ * Content-script fetch() is subject to the *page* origin and CORS. DOM/API POSTs go through
+ * the service worker (BG_DOM_*) instead.
+ * @param {string} type
+ * @param {Record<string, unknown>} payload
+ * @returns {Promise<Record<string, unknown>>}
+ */
+function sendToBackground(type, payload) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type, payload }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(
+        response && typeof response === "object"
+          ? /** @type {Record<string, unknown>} */ (response)
+          : { ok: false, error: "no response" },
+      );
+    });
+  });
+}
 
 /** @type {HTMLElement | null} */
 let lastHighlighted = null;
@@ -62,44 +83,41 @@ globalThis.serializeDOM = serializeDOM;
  * @returns {Promise<{ ok: true, object_key: string | null, workflow_id: string | null } | { ok: false, error: string }>}
  */
 async function uploadDomToBackend(html, pageUrl) {
-  try {
-    const res = await fetch(DOM_UPLOAD_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dom: html,
-        pageUrl,
-        capturedAt: new Date().toISOString(),
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return {
-        ok: false,
-        error: typeof data?.error === "string" ? data.error : `HTTP ${res.status}`,
-      };
-    }
-    const object_key =
+  const data = await sendToBackground("BG_DOM_UPLOAD", {
+    dom: html,
+    pageUrl,
+    capturedAt: new Date().toISOString(),
+  });
+  if (!data.ok) {
+    return {
+      ok: false,
+      error: typeof data.error === "string" ? data.error : "dom/upload failed",
+    };
+  }
+  if (data.response != null && typeof data.response === "object") {
+    console.log("[Sidekick] POST /dom/upload — server response:", data.response);
+  }
+  return {
+    ok: true,
+    object_key:
       data.object_key != null
         ? String(data.object_key)
         : data.objectKey != null
           ? String(data.objectKey)
-          : null;
-    const workflow_id =
+          : null,
+    workflow_id:
       data.workflow_id != null
         ? String(data.workflow_id)
         : data.workflowId != null
           ? String(data.workflowId)
-          : null;
-    return { ok: true, object_key, workflow_id };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+          : null,
+  };
 }
 
 /**
  * Register stored DOM (`object_key` from `/dom/upload`). `workflow_id` included when set.
  * @param {{ object_key: string | null, workflow_id?: string | null, page_title: string, site_url: string }} body
+ * @returns {Promise<boolean>}
  */
 async function postDomContent(body) {
   /** @type {Record<string, string>} */
@@ -112,21 +130,17 @@ async function postDomContent(body) {
     payload.workflow_id = String(body.workflow_id);
   }
 
-  try {
-    const res = await fetch(DOM_CONTENT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      const msg = typeof errData?.error === "string" ? errData.error : `HTTP ${res.status}`;
-      console.warn("[Sidekick] dom/content", msg);
-      return;
-    }
-  } catch (e) {
-    console.warn("[Sidekick] dom/content", e);
+  const res = await sendToBackground("BG_DOM_CONTENT", payload);
+  if (!res.ok) {
+    console.warn("[Sidekick] POST /dom/content failed:", res.error ?? "failed", res.response ?? "");
+    return false;
   }
+  if (res.response != null && typeof res.response === "object") {
+    console.log("[Sidekick] POST /dom/content — server response:", res.response);
+  } else {
+    console.log("[Sidekick] POST /dom/content — OK (empty or non-JSON body)");
+  }
+  return true;
 }
 
 /**
@@ -154,30 +168,28 @@ async function captureAndRegisterDom(meta = {}) {
         ? String(meta.workflowId)
         : null;
   const wf = wfFromMeta ?? uploaded.workflow_id;
-  await postDomContent({
+  const contentOk = await postDomContent({
     object_key: uploaded.object_key,
     workflow_id: wf ?? undefined,
     page_title,
     site_url: pageUrl,
   });
+  if (contentOk) {
+    console.log("[Sidekick] DOM snapshot pipeline finished (/dom/upload then /dom/content).");
+  }
 }
 
 /**
  * @param {Record<string, unknown>} payload
  */
 async function postDomUpdate(payload) {
-  try {
-    const res = await fetch(`${API_BASE}/dom/update`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pageUrl: location.href,
-        title: document.title,
-      }),
-    });
-    if (!res.ok) console.warn("[Sidekick] dom/update HTTP", res.status);
-  } catch (e) {
-    console.warn("[Sidekick] dom/update", e);
+  const res = await sendToBackground("BG_DOM_UPDATE", {
+    pageUrl: location.href,
+    title: document.title,
+    ...payload,
+  });
+  if (!res.ok) {
+    console.warn("[Sidekick] dom/update", res.error ?? "failed");
   }
 }
 
@@ -312,6 +324,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "REQUEST_DOM_SNAPSHOT") {
     const wf = message.workflow_id ?? message.workflowId;
+    console.log("[Sidekick] REQUEST_DOM_SNAPSHOT — capturing DOM for backend POST");
     void captureAndRegisterDom({
       workflow_id: wf != null ? String(wf) : undefined,
     });

@@ -33,14 +33,44 @@ function isAwaitingDomStatus(status) {
 }
 
 /**
+ * Unwrap status values that APIs return as objects (e.g. `{ code: "awaiting_dom" }`).
+ * @param {unknown} raw
+ * @returns {unknown}
+ */
+function unwrapStatusValue(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const o = /** @type {Record<string, unknown>} */ (raw);
+  if (typeof o.code === "string" || typeof o.code === "number") return o.code;
+  if (typeof o.name === "string") return o.name;
+  if (typeof o.value === "string" || typeof o.value === "number") return o.value;
+  if ("status" in o) return o.status;
+  return raw;
+}
+
+/**
  * @param {Record<string, unknown> | null | undefined} payload
  * @returns {unknown}
  */
 function extractStatusFromPayload(payload) {
   if (!payload || typeof payload !== "object") return null;
   const o = /** @type {Record<string, unknown>} */ (payload);
-  if ("status" in o) return o.status;
-  if ("workflow_status" in o) return o.workflow_status;
+  const direct = [
+    o.status,
+    o.workflow_status,
+    o.workflowStatus,
+    o.state,
+    o.phase,
+  ];
+  for (const v of direct) {
+    if (v !== undefined) return unwrapStatusValue(v);
+  }
+  const nested = o.data ?? o.workflow ?? o.result;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const n = /** @type {Record<string, unknown>} */ (nested);
+    const inner = n.status ?? n.workflow_status ?? n.state;
+    if (inner !== undefined) return unwrapStatusValue(inner);
+  }
   return null;
 }
 
@@ -52,7 +82,7 @@ function maybeRequestDomSnapshot(tabId, payload) {
   const st = extractStatusFromPayload(payload);
   if (!isAwaitingDomStatus(st)) return;
   if (tabId == null) {
-    console.warn("[Sidekick] Awaiting_Dom but no tabId");
+    console.warn("[Sidekick] awaiting_dom but no tabId — cannot message content script");
     return;
   }
   const p = payload && typeof payload === "object" ? payload : {};
@@ -60,13 +90,19 @@ function maybeRequestDomSnapshot(tabId, payload) {
   const dk = p.dom_object_key ?? p.domObjectKey;
   const workflowId = wf != null ? String(wf) : undefined;
   const domObjectKey = dk != null ? String(dk) : undefined;
+  console.log("[Sidekick] awaiting_dom → REQUEST_DOM_SNAPSHOT", { tabId, workflowId });
   chrome.tabs
     .sendMessage(tabId, {
       type: "REQUEST_DOM_SNAPSHOT",
       workflow_id: workflowId,
       dom_object_key: domObjectKey,
     })
-    .catch(() => {});
+    .catch((err) => {
+      console.warn(
+        "[Sidekick] REQUEST_DOM_SNAPSHOT failed (is the Sidekick tab active, and is this page chrome:// or restricted?) ",
+        err?.message ?? err,
+      );
+    });
 }
 
 /**
@@ -81,6 +117,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "BG_TASK_GENERATE") {
     const payload =
       message.payload && typeof message.payload === "object" ? message.payload : {};
+    const tabId =
+      typeof message.tabId === "number"
+        ? message.tabId
+        : typeof message.tab_id === "number"
+          ? message.tab_id
+          : undefined;
 
     fetch(`${API_BASE}/task/generate`, {
       method: "POST",
@@ -92,6 +134,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!res.ok) {
           sendResponse({ ok: false, error: `HTTP ${res.status}`, data });
           return;
+        }
+        if (isRecord(data)) {
+          maybeRequestDomSnapshot(tabId, data);
         }
         sendResponse({ ok: true, data });
       })
@@ -111,6 +156,92 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     maybeRequestDomSnapshot(tabId, payload);
     sendResponse({ ok: true });
     return false;
+  }
+
+  /**
+   * DOM API calls from content scripts must not use fetch() in the page — CORS uses the
+   * page origin (e.g. google.com). Proxy here so requests use the extension context.
+   */
+  if (message?.type === "BG_DOM_UPLOAD") {
+    const body = message.payload && typeof message.payload === "object" ? message.payload : {};
+    fetch(`${API_BASE}/dom/upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          sendResponse({
+            ok: false,
+            error: typeof data?.error === "string" ? data.error : `HTTP ${res.status}`,
+          });
+          return;
+        }
+        const object_key =
+          data.object_key != null
+            ? String(data.object_key)
+            : data.objectKey != null
+              ? String(data.objectKey)
+              : null;
+        const workflow_id =
+          data.workflow_id != null
+            ? String(data.workflow_id)
+            : data.workflowId != null
+              ? String(data.workflowId)
+              : null;
+        console.log("[Sidekick] /dom/upload response JSON:", data);
+        sendResponse({ ok: true, object_key, workflow_id, response: data });
+      })
+      .catch((e) => {
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      });
+    return true;
+  }
+
+  if (message?.type === "BG_DOM_CONTENT") {
+    const body = message.payload && typeof message.payload === "object" ? message.payload : {};
+    fetch(`${API_BASE}/dom/content`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = typeof data?.error === "string" ? data.error : `HTTP ${res.status}`;
+          sendResponse({ ok: false, error: msg, response: data });
+          return;
+        }
+        console.log("[Sidekick] /dom/content response JSON:", data);
+        sendResponse({ ok: true, response: data });
+      })
+      .catch((e) => {
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      });
+    return true;
+  }
+
+  if (message?.type === "BG_DOM_UPDATE") {
+    const body = message.payload && typeof message.payload === "object" ? message.payload : {};
+    fetch(`${API_BASE}/dom/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const msg = typeof errData?.error === "string" ? errData.error : `HTTP ${res.status}`;
+          sendResponse({ ok: false, error: msg });
+          return;
+        }
+        sendResponse({ ok: true });
+      })
+      .catch((e) => {
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      });
+    return true;
   }
 
   if (message?.type === "BG_FETCH_NEXT_ACTION") {
