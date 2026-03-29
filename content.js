@@ -4,13 +4,12 @@
  * Server (same host as API_BASE):
  * - POST /dom/upload — JSON { dom, pageUrl, capturedAt } → object_key (and optional workflow_id)
  * - POST /dom/content — JSON { object_key, page_title, site_url, workflow_id? }
- * - POST /dom/update — JSON { pageUrl, title, timestamp, ...interaction fields }
  * - Playback: GET /audio/download?object_key=…
  *
  * Next-step delivery is not polled here; optional background may POST /task/generate and forward APPLY_ACTION.
  *
  * Messages from extension UI / background:
- * - APPLY_ACTION — { selector?, audioKey? }
+ * - APPLY_ACTION — { element_id?, audio_object_key?, status? }
  * - CS_RENDER_STEP / CS_CLEAR_STEP — side panel onboarding
  * - REQUEST_DOM_SNAPSHOT — optional workflow_id; upload DOM then POST /dom/content; worker sends when status is Awaiting_Dom.
  * - HIGHLIGHT / CLEAR — legacy
@@ -30,6 +29,10 @@ const API_BASE = "http://10.101.16.249:5001";
  */
 function sendToBackground(type, payload) {
   return new Promise((resolve) => {
+    if (isWorkflowTerminal) {
+      resolve({ ok: false, error: "workflow_terminal" });
+      return;
+    }
     chrome.runtime.sendMessage({ type, payload }, (response) => {
       if (chrome.runtime.lastError) {
         resolve({ ok: false, error: chrome.runtime.lastError.message });
@@ -48,7 +51,40 @@ function sendToBackground(type, payload) {
 let lastHighlighted = null;
 /** @type {HTMLAudioElement | null} */
 let currentAudio = null;
-let inputDebounceTimer = 0;
+let isWorkflowTerminal = false;
+let terminalStatusLogged = false;
+
+/**
+ * @param {unknown} status
+ * @returns {string}
+ */
+function normalizeStatus(status) {
+  if (status == null) return "";
+  return String(status).trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+/**
+ * @param {unknown} status
+ * @returns {boolean}
+ */
+function isTerminalStatus(status) {
+  const s = normalizeStatus(status);
+  return s === "cancelled" || s === "completed";
+}
+
+/**
+ * @param {unknown} status
+ */
+function markTerminalIfNeeded(status) {
+  if (!isTerminalStatus(status)) return;
+  isWorkflowTerminal = true;
+  if (!terminalStatusLogged) {
+    terminalStatusLogged = true;
+    console.log("[Sidekick] Terminal status reached — stopping backend communication.", {
+      status: normalizeStatus(status),
+    });
+  }
+}
 
 /**
  * @returns {string} Full document HTML (doctype + documentElement).
@@ -117,7 +153,7 @@ async function uploadDomToBackend(html, pageUrl) {
 /**
  * Register stored DOM (`object_key` from `/dom/upload`). `workflow_id` included when set.
  * @param {{ object_key: string | null, workflow_id?: string | null, page_title: string, site_url: string }} body
- * @returns {Promise<boolean>}
+ * @returns {Promise<Record<string, unknown> | null>}
  */
 async function postDomContent(body) {
   /** @type {Record<string, string>} */
@@ -132,15 +168,17 @@ async function postDomContent(body) {
 
   const res = await sendToBackground("BG_DOM_CONTENT", payload);
   if (!res.ok) {
+    if (res.error === "workflow_terminal") return null;
     console.warn("[Sidekick] POST /dom/content failed:", res.error ?? "failed", res.response ?? "");
-    return false;
+    return null;
   }
   if (res.response != null && typeof res.response === "object") {
     console.log("[Sidekick] POST /dom/content — server response:", res.response);
+    return /** @type {Record<string, unknown>} */ (res.response);
   } else {
     console.log("[Sidekick] POST /dom/content — OK (empty or non-JSON body)");
+    return {};
   }
-  return true;
 }
 
 /**
@@ -149,6 +187,7 @@ async function postDomContent(body) {
  * @param {{ workflow_id?: string, workflowId?: string }} [meta]
  */
 async function captureAndRegisterDom(meta = {}) {
+  if (isWorkflowTerminal) return;
   const html = getFullDOM();
   const pageUrl = location.href;
   const page_title = document.title;
@@ -168,28 +207,33 @@ async function captureAndRegisterDom(meta = {}) {
         ? String(meta.workflowId)
         : null;
   const wf = wfFromMeta ?? uploaded.workflow_id;
-  const contentOk = await postDomContent({
+  const contentResponse = await postDomContent({
     object_key: uploaded.object_key,
     workflow_id: wf ?? undefined,
     page_title,
     site_url: pageUrl,
   });
-  if (contentOk) {
+  if (contentResponse) {
+    const nextAction =
+      contentResponse.next_action &&
+      typeof contentResponse.next_action === "object" &&
+      !Array.isArray(contentResponse.next_action)
+        ? /** @type {Record<string, unknown>} */ (contentResponse.next_action)
+        : null;
+    applyAction({
+      element_id:
+        nextAction?.element_id ??
+        nextAction?.element ??
+        contentResponse.element_id ??
+        contentResponse.element,
+      audio_object_key:
+        nextAction?.audio_object_key ??
+        nextAction?.audioKey ??
+        contentResponse.audio_object_key ??
+        contentResponse.audioKey,
+      status: contentResponse.status,
+    });
     console.log("[Sidekick] DOM snapshot pipeline finished (/dom/upload then /dom/content).");
-  }
-}
-
-/**
- * @param {Record<string, unknown>} payload
- */
-async function postDomUpdate(payload) {
-  const res = await sendToBackground("BG_DOM_UPDATE", {
-    pageUrl: location.href,
-    title: document.title,
-    ...payload,
-  });
-  if (!res.ok) {
-    console.warn("[Sidekick] dom/update", res.error ?? "failed");
   }
 }
 
@@ -220,16 +264,16 @@ function applyMinimalHighlight(selector) {
 }
 
 /**
- * @param {string} audioKey
+ * @param {string} audioObjectKey
  */
-function playAudioKey(audioKey) {
-  if (!audioKey) return;
+function playAudioKey(audioObjectKey) {
+  if (!audioObjectKey) return;
   try {
     if (currentAudio) {
       currentAudio.pause();
       currentAudio = null;
     }
-    const url = `${API_BASE}/audio/download?object_key=${encodeURIComponent(audioKey)}`;
+    const url = `${API_BASE}/audio/download?object_key=${encodeURIComponent(audioObjectKey)}`;
     const audio = new Audio(url);
     currentAudio = audio;
     audio.play().catch((e) => console.warn("[Sidekick] audio play", e));
@@ -239,46 +283,19 @@ function playAudioKey(audioKey) {
 }
 
 /**
- * @param {{ selector?: string, audioKey?: string }} action
+ * @param {{ element_id?: unknown, audio_object_key?: unknown, status?: unknown, selector?: unknown, audioKey?: unknown }} action
  */
 function applyAction(action) {
-  if (action.selector) applyMinimalHighlight(action.selector);
-  if (action.audioKey) playAudioKey(action.audioKey);
+  markTerminalIfNeeded(action.status);
+  const elementId = action.element_id ?? action.selector;
+  const audioObjectKey = action.audio_object_key ?? action.audioKey;
+  if (typeof elementId === "string" && elementId.trim()) {
+    applyMinimalHighlight(elementId.trim());
+  }
+  if (typeof audioObjectKey === "string" && audioObjectKey.trim()) {
+    playAudioKey(audioObjectKey.trim());
+  }
 }
-
-function bindDomUpdateListeners() {
-  document.addEventListener(
-    "click",
-    (e) => {
-      const t = e.target;
-      postDomUpdate({
-        eventType: "click",
-        tag: t instanceof Element ? t.tagName : null,
-        id: t instanceof Element && t.id ? t.id : null,
-        className: t instanceof Element && t.className ? String(t.className).slice(0, 200) : null,
-      });
-    },
-    true,
-  );
-
-  document.addEventListener(
-    "input",
-    (e) => {
-      const t = e.target;
-      window.clearTimeout(inputDebounceTimer);
-      inputDebounceTimer = window.setTimeout(() => {
-        postDomUpdate({
-          eventType: "input",
-          tag: t instanceof Element ? t.tagName : null,
-          inputType: t instanceof HTMLInputElement ? t.type : null,
-        });
-      }, 500);
-    },
-    true,
-  );
-}
-
-bindDomUpdateListeners();
 
 function notifyPanelRendered() {
   chrome.runtime.sendMessage({ type: "PANEL_STEP_RENDERED" }).catch(() => {});
@@ -290,10 +307,7 @@ function notifyPanelNotFound() {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "APPLY_ACTION") {
-    applyAction({
-      selector: message.selector,
-      audioKey: message.audioKey,
-    });
+    applyAction(message);
     if (sendResponse) sendResponse({ ok: true });
     return false;
   }
@@ -343,11 +357,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       currentAudio.pause();
       currentAudio = null;
     }
-    return false;
-  }
-
-  if (message?.type === "REPORT_STEP_DONE") {
-    postDomUpdate({ eventType: "step_completed", detail: message.detail ?? null });
     return false;
   }
 

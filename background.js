@@ -113,6 +113,45 @@ function isRecord(data) {
   return data != null && typeof data === "object" && !Array.isArray(data);
 }
 
+/**
+ * @param {Record<string, unknown>} data
+ * @returns {{ element_id?: string, audio_object_key?: string, status?: string } | null}
+ */
+function getDemoActionPayload(data) {
+  const nextAction =
+    data.next_action && typeof data.next_action === "object" && !Array.isArray(data.next_action)
+      ? /** @type {Record<string, unknown>} */ (data.next_action)
+      : null;
+
+  const rawElement =
+    data.element_id ??
+    data.element ??
+    data.selector ??
+    nextAction?.element_id ??
+    nextAction?.element ??
+    nextAction?.selector;
+  const rawAudio =
+    data.audio_object_key ??
+    data.audioKey ??
+    nextAction?.audio_object_key ??
+    nextAction?.audioKey;
+  const rawStatus = extractStatusFromPayload(data);
+
+  const action = {};
+  if (rawElement != null && String(rawElement).trim() !== "") {
+    action.element_id = String(rawElement);
+  }
+  if (rawAudio != null && String(rawAudio).trim() !== "") {
+    action.audio_object_key = String(rawAudio);
+  }
+  if (rawStatus != null && String(rawStatus).trim() !== "") {
+    action.status = String(rawStatus);
+  }
+  return Object.keys(action).length > 0
+    ? /** @type {{ element_id?: string, audio_object_key?: string, status?: string }} */ (action)
+    : null;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "BG_TASK_GENERATE") {
     const payload =
@@ -222,28 +261,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "BG_DOM_UPDATE") {
-    const body = message.payload && typeof message.payload === "object" ? message.payload : {};
-    fetch(`${API_BASE}/dom/update`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          const msg = typeof errData?.error === "string" ? errData.error : `HTTP ${res.status}`;
-          sendResponse({ ok: false, error: msg });
-          return;
-        }
-        sendResponse({ ok: true });
-      })
-      .catch((e) => {
-        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
-      });
-    return true;
-  }
-
   if (message?.type === "BG_FETCH_NEXT_ACTION") {
     const tabId = message.tabId ?? sender.tab?.id;
     const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
@@ -265,11 +282,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             data,
           );
         }
-        if (tabId != null && (data.selector || data.audioKey)) {
+        const action = isRecord(data) ? getDemoActionPayload(data) : null;
+        if (tabId != null && action) {
           chrome.tabs.sendMessage(tabId, {
             type: "APPLY_ACTION",
-            selector: data.selector,
-            audioKey: data.audioKey,
+            ...action,
           }).catch(() => {});
         }
         sendResponse({ ok: true, data });
