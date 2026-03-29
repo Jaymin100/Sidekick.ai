@@ -33,6 +33,21 @@ document.addEventListener("DOMContentLoaded", () => {
   /** @type {EventSource | null} */
   let workflowEventSource = null;
 
+  /**
+   * @param {Record<string, unknown>} payload
+   */
+  function forwardWorkflowStatusToWorker(payload) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+      if (tabId == null) return;
+      chrome.runtime.sendMessage({
+        type: "WORKFLOW_STATUS",
+        tabId,
+        payload,
+      }).catch(() => {});
+    });
+  }
+
   function closeWorkflowStream() {
     if (workflowEventSource) {
       workflowEventSource.close();
@@ -45,6 +60,8 @@ document.addEventListener("DOMContentLoaded", () => {
    */
   function handleWorkflowEvent(payload) {
     console.log("[SSE] workflow update", payload);
+
+    forwardWorkflowStatusToWorker(payload);
 
     if (Array.isArray(payload.steps) && payload.steps.length > 0) {
       startOnboarding({
@@ -80,7 +97,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     workflowEventSource.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data);
+        const payload = /** @type {Record<string, unknown>} */ (JSON.parse(event.data));
         handleWorkflowEvent(payload);
       } catch (e) {
         console.warn("[SSE] bad JSON", e, event.data);
@@ -295,17 +312,51 @@ document.addEventListener("DOMContentLoaded", () => {
         generateBody.object_key = audioObjectKey;
       }
 
-      const res = await fetch(`${API_BASE}/task/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(generateBody),
+      const genResponse = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          {
+            type: "BG_TASK_GENERATE",
+            payload: generateBody,
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              resolve({
+                ok: false,
+                error: chrome.runtime.lastError.message,
+                data: {},
+              });
+              return;
+            }
+            resolve(response);
+          },
+        );
       });
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        statusText.textContent = data?.error ? String(data.error) : `Error ${res.status}`;
+      if (!genResponse || typeof genResponse !== "object" || !("ok" in genResponse)) {
+        statusText.textContent = "Invalid response from extension";
         return;
       }
+
+      if (!genResponse.ok) {
+        const errData =
+          "data" in genResponse && genResponse.data && typeof genResponse.data === "object"
+            ? /** @type {{ error?: unknown }} */ (genResponse.data)
+            : {};
+        const errMsg =
+          "error" in genResponse && genResponse.error != null
+            ? String(genResponse.error)
+            : "Error";
+        statusText.textContent =
+          errData.error != null ? String(errData.error) : errMsg;
+        return;
+      }
+
+      const data =
+        "data" in genResponse && genResponse.data && typeof genResponse.data === "object"
+          ? /** @type {Record<string, unknown>} */ (genResponse.data)
+          : {};
+
+      forwardWorkflowStatusToWorker(data);
 
       const workflowId = data.workflow_id ?? data.workflowId;
       const initialStatus = data.status;

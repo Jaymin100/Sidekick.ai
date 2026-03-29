@@ -2,8 +2,7 @@
  * Content script — stateless worker: no orchestration; DOM + updates + executing backend steps.
  *
  * Server (same host as API_BASE):
- * - GET /dom/content — query pageUrl + html (preferred; see DOM_CONTENT_GET_MAX_URL)
- * - POST /dom/content — JSON { pageUrl, html } when GET URL would exceed safe length
+ * - POST /dom/content — JSON { dom_object_key, workflow_id, page_title, site_url, html }
  * - POST /dom/update — JSON { pageUrl, title, timestamp, ...interaction fields }
  * - Playback: GET /audio/download?object_key=…
  *
@@ -12,14 +11,14 @@
  * Messages from extension UI / background:
  * - APPLY_ACTION — { selector?, audioKey? }
  * - CS_RENDER_STEP / CS_CLEAR_STEP — side panel onboarding
- * - REQUEST_DOM_SNAPSHOT — send DOM to /dom/content (GET or POST fallback)
+ * - REQUEST_DOM_SNAPSHOT — optional workflow_id, dom_object_key; POST /dom/content; worker sends when status is Awaiting_Dom.
  * - HIGHLIGHT / CLEAR — legacy
+ * 
+ * 
+ * 
  */
 
 const API_BASE = "http://10.101.16.249:5001";
-
-/** If the full GET URL exceeds this (chars), use POST /dom/content with JSON body instead. */
-const DOM_CONTENT_GET_MAX_URL = 8192;
 
 /** @type {HTMLElement | null} */
 let lastHighlighted = null;
@@ -54,34 +53,23 @@ globalThis.getFullDOM = getFullDOM;
 globalThis.serializeDOM = serializeDOM;
 
 /**
- * Snapshot fields for /dom/content (GET query or POST JSON).
- * @returns {{ pageUrl: string, html: string }}
+ * @param {{ workflow_id?: string, dom_object_key?: string }} [meta]
  */
-function collectPageContext() {
-  return {
-    pageUrl: location.href,
+async function postDomContent(meta = {}) {
+  const body = {
+    dom_object_key: meta.dom_object_key ?? null,
+    workflow_id: meta.workflow_id ?? null,
+    page_title: document.title,
+    site_url: location.href,
     html: getFullDOM(),
   };
-}
 
-async function postDomContent() {
-  const { pageUrl, html } = collectPageContext();
-  const base = `${API_BASE}/dom/content`;
   try {
-    const u = new URL(base);
-    u.searchParams.set("pageUrl", pageUrl);
-    u.searchParams.set("html", html);
-
-    const urlStr = u.toString();
-    const useGet = urlStr.length <= DOM_CONTENT_GET_MAX_URL;
-
-    const res = useGet
-      ? await fetch(urlStr, { method: "GET" })
-      : await fetch(base, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pageUrl, html }),
-        });
+    const res = await fetch(`${API_BASE}/dom/content`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
 
     if (!res.ok) console.warn("[Sidekick] dom/content HTTP", res.status);
   } catch (e) {
@@ -238,7 +226,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "REQUEST_DOM_SNAPSHOT") {
-    void postDomContent();
+    const wf = message.workflow_id ?? message.workflowId;
+    const dk = message.dom_object_key ?? message.domObjectKey;
+    void postDomContent({
+      workflow_id: wf != null ? String(wf) : undefined,
+      dom_object_key: dk != null ? String(dk) : undefined,
+    });
     if (sendResponse) sendResponse({ ok: true });
     return false;
   }
