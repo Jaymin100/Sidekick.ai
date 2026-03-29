@@ -91,18 +91,71 @@ function maybeRequestDomSnapshot(tabId, payload) {
   const workflowId = wf != null ? String(wf) : undefined;
   const domObjectKey = dk != null ? String(dk) : undefined;
   console.log("[Sidekick] awaiting_dom → REQUEST_DOM_SNAPSHOT", { tabId, workflowId });
-  chrome.tabs
-    .sendMessage(tabId, {
-      type: "REQUEST_DOM_SNAPSHOT",
-      workflow_id: workflowId,
-      dom_object_key: domObjectKey,
-    })
-    .catch((err) => {
-      console.warn(
-        "[Sidekick] REQUEST_DOM_SNAPSHOT failed (is the Sidekick tab active, and is this page chrome:// or restricted?) ",
-        err?.message ?? err,
-      );
+  void sendDomSnapshotRequest(tabId, {
+    workflow_id: workflowId,
+    dom_object_key: domObjectKey,
+  });
+}
+
+/**
+ * @param {number} tabId
+ * @returns {Promise<boolean>}
+ */
+async function isTabReadyForSidekick(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: "PING_SIDEKICK" });
+    return !!(response && typeof response === "object" && response.ok === true);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {number} tabId
+ * @returns {Promise<boolean>}
+ */
+async function ensureContentScriptReady(tabId) {
+  const alreadyReady = await isTabReadyForSidekick(tabId);
+  if (alreadyReady) return true;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
     });
+  } catch (err) {
+    console.warn(
+      "[Sidekick] content bootstrap failed (tab may be restricted, such as chrome:// pages).",
+      err?.message ?? err,
+    );
+    return false;
+  }
+  return isTabReadyForSidekick(tabId);
+}
+
+/**
+ * @param {number} tabId
+ * @param {{ workflow_id?: string, dom_object_key?: string }} payload
+ */
+async function sendDomSnapshotRequest(tabId, payload) {
+  const ready = await ensureContentScriptReady(tabId);
+  if (!ready) {
+    console.warn(
+      "[Sidekick] REQUEST_DOM_SNAPSHOT skipped: no content script receiver in target tab.",
+    );
+    return;
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "REQUEST_DOM_SNAPSHOT",
+      workflow_id: payload.workflow_id,
+      dom_object_key: payload.dom_object_key,
+    });
+  } catch (err) {
+    console.warn(
+      "[Sidekick] REQUEST_DOM_SNAPSHOT failed after bootstrap.",
+      err?.message ?? err,
+    );
+  }
 }
 
 /**
@@ -182,7 +235,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((e) => {
         sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
       });
-
+ 
     return true;
   }
 

@@ -12,7 +12,7 @@
  * - APPLY_ACTION — { element_id?, audio_object_key?, status? }
  * - CS_RENDER_STEP / CS_CLEAR_STEP — side panel onboarding
  * - REQUEST_DOM_SNAPSHOT — optional workflow_id; upload DOM then POST /dom/content; worker sends when status is Awaiting_Dom.
- * - HIGHLIGHT / CLEAR — legacy
+ * - HIGHLIGHT / CLEAR — legacy 
  * 
  * 
  * 
@@ -49,6 +49,11 @@ function sendToBackground(type, payload) {
 
 /** @type {HTMLElement | null} */
 let lastHighlighted = null;
+/** @type {HTMLDivElement | null} */
+let dimOverlay = null;
+let lastHighlightPrevPosition = "";
+let lastHighlightPrevZIndex = "";
+let lastHighlightForcedPosition = false;
 /** @type {HTMLAudioElement | null} */
 let currentAudio = null;
 let isWorkflowTerminal = false;
@@ -240,7 +245,18 @@ async function captureAndRegisterDom(meta = {}) {
 function clearHighlight() {
   if (lastHighlighted) {
     lastHighlighted.style.outline = "";
+    if (lastHighlightForcedPosition) {
+      lastHighlighted.style.position = lastHighlightPrevPosition;
+    }
+    lastHighlighted.style.zIndex = lastHighlightPrevZIndex;
+    lastHighlightForcedPosition = false;
+    lastHighlightPrevPosition = "";
+    lastHighlightPrevZIndex = "";
     lastHighlighted = null;
+  }
+  if (dimOverlay) {
+    dimOverlay.remove();
+    dimOverlay = null;
   }
 }
 
@@ -250,13 +266,43 @@ function clearHighlight() {
  */
 function applyMinimalHighlight(selector) {
   clearHighlight();
+  if (!dimOverlay) {
+    const overlay = document.createElement("div");
+    overlay.id = "__sidekick_dim_overlay";
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.background = "rgba(17, 24, 39, 0.55)";
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex = "2147483646";
+    overlay.style.backdropFilter = "grayscale(0.2)";
+    document.documentElement.appendChild(overlay);
+    dimOverlay = overlay;
+  }
   let el;
   try {
     el = document.querySelector(selector);
   } catch {
+    if (dimOverlay) {
+      dimOverlay.remove();
+      dimOverlay = null;
+    }
     return false;
   }
-  if (!el) return false;
+  if (!el) {
+    if (dimOverlay) {
+      dimOverlay.remove();
+      dimOverlay = null;
+    }
+    return false;
+  }
+  lastHighlightPrevPosition = el.style.position;
+  lastHighlightPrevZIndex = el.style.zIndex;
+  const computedPos = window.getComputedStyle(el).position;
+  if (computedPos === "static") {
+    el.style.position = "relative";
+    lastHighlightForcedPosition = true;
+  }
+  el.style.zIndex = "2147483647";
   el.style.outline = "3px solid #2563eb";
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   lastHighlighted = el;
@@ -306,6 +352,11 @@ function notifyPanelNotFound() {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "PING_SIDEKICK") {
+    if (sendResponse) sendResponse({ ok: true });
+    return false;
+  }
+
   if (message?.type === "APPLY_ACTION") {
     applyAction(message);
     if (sendResponse) sendResponse({ ok: true });
