@@ -1,4 +1,5 @@
 const DOM_UPLOAD_URL = "http://10.101.16.249:5001/dom/upload";
+const DOM_CONTENT_URL = "http://10.101.16.249:5001/dom/content";
 const AUDIO_DOWNLOAD_URL = "http://10.101.16.249:5001/audio/download";
 
 const statusEl = document.getElementById("status");
@@ -21,9 +22,10 @@ async function getActiveHttpTabId() {
 }
 
 /**
+ * Upload raw DOM HTML to storage; response should include `object_key` (and optionally `workflow_id`).
  * @param {string} html
  * @param {string} pageUrl
- * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+ * @returns {Promise<{ ok: true, object_key: string | null, workflow_id: string | null } | { ok: false, error: string }>}
  */
 async function uploadDomToBackend(html, pageUrl) {
   try {
@@ -36,13 +38,50 @@ async function uploadDomToBackend(html, pageUrl) {
         capturedAt: new Date().toISOString(),
       }),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}` };
+      return {
+        ok: false,
+        error: typeof data?.error === "string" ? data.error : `HTTP ${res.status}`,
+      };
     }
-    return { ok: true };
+    const object_key =
+      data.object_key != null ? String(data.object_key) : data.objectKey != null ? String(data.objectKey) : null;
+    const workflow_id = "hi"
+     
+    return { ok: true, object_key, workflow_id };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Register stored DOM (`object_key` from `/dom/upload`). `workflow_id` is optional and omitted when unset.
+ * @param {{ object_key: string | null, workflow_id?: string | null, page_title: string, site_url: string }} body
+ */
+async function postDomContent(body) {
+  /** @type {Record<string, string>} */
+  const payload = {
+    "object_key": body.object_key ?? "",
+    "page_title": body.page_title,
+    "site_url": body.site_url,
+    "workflow_id": "123"
+  };
+
+
+  const res = await fetch(DOM_CONTENT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const msg = typeof errData?.error === "string" ? errData.error : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  const resData = await res.json();
+  alert(JSON.stringify(resData));
 }
 
 /**
@@ -112,9 +151,27 @@ copyDomBtn?.addEventListener("click", async () => {
     await navigator.clipboard.writeText(html);
     const kb = (html.length / 1024).toFixed(1);
     const uploaded = await uploadDomToBackend(html, url);
-    statusEl.textContent = uploaded.ok
-      ? `Copied full DOM (${kb} KB) and sent to backend. Save as .html if you want.`
-      : `Copied full DOM (${kb} KB). Upload failed: ${uploaded.error}`;
+    if (!uploaded.ok) {
+      statusEl.textContent = `Copied full DOM (${kb} KB). Upload failed: ${uploaded.error}`;
+      return;
+    }
+    const page_title = tab.title ?? "";
+    if (!uploaded.object_key) {
+      statusEl.textContent = `Copied full DOM (${kb} KB). Upload OK but no object_key — skipping /dom/content.`;
+      return;
+    }
+    try {
+      await postDomContent({
+        object_key: uploaded.object_key,
+        workflow_id: uploaded.workflow_id,
+        page_title,
+        site_url: url,
+      });
+      statusEl.textContent = `Copied full DOM (${kb} KB), uploaded, and registered at /dom/content.`;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      statusEl.textContent = `DOM uploaded (${kb} KB) but /dom/content failed: ${msg}`;
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     statusEl.textContent =
