@@ -244,7 +244,7 @@ async function captureAndRegisterDom(meta = {}) {
     });
     if (contentResponse) {
       const responseStatus = normalizeStatus(contentResponse.status);
-      if (responseStatus === "awaiting_dom") {
+      if (responseStatus === "in_progress" || responseStatus === "awaiting_dom") {
         isAwaitingDomLoopActive = true;
       } else if (isTerminalStatus(responseStatus)) {
         isAwaitingDomLoopActive = false;
@@ -324,6 +324,93 @@ function clearHighlight() {
 }
 
 /**
+ * @param {string} value
+ * @returns {string}
+ */
+function cssEscapeValue(value) {
+  if (globalThis.CSS && typeof globalThis.CSS.escape === "function") {
+    return globalThis.CSS.escape(value);
+  }
+  return value.replace(/["\\]/g, "\\$&");
+}
+
+/**
+ * @param {Element} el
+ * @returns {boolean}
+ */
+function isElementInteractable(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.hidden) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+/**
+ * @param {Element[]} elements
+ * @returns {Element | null}
+ */
+function pickBestVisibleElement(elements) {
+  const visible = elements.filter(isElementInteractable);
+  if (visible.length === 0) return null;
+  const centerX = window.innerWidth / 2;
+  const centerY = window.innerHeight / 2;
+  visible.sort((a, b) => {
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    const ad = Math.hypot(ar.left + ar.width / 2 - centerX, ar.top + ar.height / 2 - centerY);
+    const bd = Math.hypot(br.left + br.width / 2 - centerX, br.top + br.height / 2 - centerY);
+    return ad - bd;
+  });
+  return visible[0] ?? null;
+}
+
+/**
+ * @param {string} selectorLike
+ * @returns {Element | null}
+ */
+function resolveTargetElement(selectorLike) {
+  const raw = String(selectorLike ?? "").trim();
+  if (!raw) return null;
+  const normalized = raw
+    .replace(/^selector\s*:\s*/i, "")
+    .replace(/^css\s*=\s*/i, "")
+    .replace(/^['"`](.*)['"`]$/s, "$1")
+    .trim();
+
+  try {
+    const exact = document.querySelector(normalized);
+    if (exact) return exact;
+  } catch {
+    // fall through to fuzzy matching
+  }
+
+  const cleanToken = normalized
+    .replace(/^#/, "")
+    .replace(/^[.\[]+|[\]]+$/g, "")
+    .trim();
+  if (!cleanToken) return null;
+  const escaped = cssEscapeValue(cleanToken);
+
+  const byId = document.getElementById(cleanToken);
+  if (byId && isElementInteractable(byId)) return byId;
+
+  const fuzzyCandidates = [];
+  fuzzyCandidates.push(...document.querySelectorAll(`[name="${escaped}"]`));
+  fuzzyCandidates.push(...document.querySelectorAll(`[aria-label*="${escaped}" i]`));
+  fuzzyCandidates.push(...document.querySelectorAll(`[placeholder*="${escaped}" i]`));
+  const fuzzy = pickBestVisibleElement(fuzzyCandidates);
+  if (fuzzy) return fuzzy;
+
+  if (/^[a-z][a-z0-9-]*$/i.test(cleanToken)) {
+    const byTag = pickBestVisibleElement(Array.from(document.querySelectorAll(cleanToken)));
+    if (byTag) return byTag;
+  }
+  return null;
+}
+
+/**
  * @param {string} selector
  * @returns {boolean}
  */
@@ -341,16 +428,7 @@ function applyMinimalHighlight(selector) {
     document.documentElement.appendChild(overlay);
     dimOverlay = overlay;
   }
-  let el;
-  try {
-    el = document.querySelector(selector);
-  } catch {
-    if (dimOverlay) {
-      dimOverlay.remove();
-      dimOverlay = null;
-    }
-    return false;
-  }
+  const el = resolveTargetElement(selector);
   if (!el) {
     if (dimOverlay) {
       dimOverlay.remove();
