@@ -37,6 +37,16 @@ document.addEventListener("DOMContentLoaded", () => {
   let workflowTargetTabId = null;
 
   /**
+   * Normalize status text from backend/SSE.
+   * @param {unknown} status
+   * @returns {string}
+   */
+  function normalizeWorkflowStatus(status) {
+    if (status == null) return "";
+    return String(status).trim().toLowerCase().replace(/[\s-]+/g, "_");
+  }
+
+  /**
    * @param {Record<string, unknown>} payload
    * @param {number | undefined} [preferredTabId] — same tab as page_url for /task/generate
    */
@@ -71,12 +81,29 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   /**
+   * @param {unknown} status
+   */
+  function applyDemoStatusUi(status) {
+    const s = normalizeWorkflowStatus(status);
+    if (!s) return;
+    if (s === "completed" || s === "cancelled") {
+      setWorkflowTerminal(s);
+      if (s === "completed") {
+        closeWorkflowStream();
+      }
+      return;
+    }
+    setWorkflowPending();
+  }
+
+  /**
    * @param {Record<string, unknown>} payload
    */
   function handleWorkflowEvent(payload) {
     console.log("[SSE] workflow update", payload);
 
     forwardWorkflowStatusToWorker(payload, workflowTargetTabId ?? undefined);
+    applyDemoStatusUi(payload.status ?? payload.workflow_status);
 
     if (Array.isArray(payload.steps) && payload.steps.length > 0) {
       startOnboarding({
@@ -261,6 +288,7 @@ document.addEventListener("DOMContentLoaded", () => {
     startRecording();
 
     startBtn.style.display = "none";
+    startBtn.disabled = false;
     listeningControls.style.display = "flex";
     cancelBtn.style.display = "inline-block";
 
@@ -287,11 +315,7 @@ document.addEventListener("DOMContentLoaded", () => {
     resetState();
     clearHighlight();
 
-    startBtn.style.display = "inline-block";
-    listeningControls.style.display = "none";
-    cancelBtn.style.display = "none";
-
-    setIdle();
+    setReadyToRecord();
   };
 
   // ===== SEND =====
@@ -309,7 +333,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     console.log("[SEND] FINAL Transcript:", transcript);
 
-    setProcessing();
+    setWorkflowPending();
 
     try {
       if (uploadPromise) await uploadPromise;
@@ -381,6 +405,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (initialStatus != null) {
         statusText.textContent = String(initialStatus);
+        applyDemoStatusUi(initialStatus);
+      } else {
+        setWorkflowPending();
       }
 
       if (Array.isArray(data.steps) && data.steps.length > 0) {
@@ -393,6 +420,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (workflowId) {
         currentTask = { ...data, workflow_id: workflowId };
         openWorkflowStream(workflowId);
+      } else if (!Array.isArray(data.steps) || data.steps.length === 0) {
+        setWorkflowPending();
       }
 
     } catch (err) {
@@ -444,7 +473,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     resetState();
     clearHighlight();
-    setIdle();
+    setReadyToRecord();
   };
 
   // ===== CONTENT SCRIPT MESSAGES =====
@@ -527,11 +556,34 @@ document.addEventListener("DOMContentLoaded", () => {
     cancelBtnOnboarding.style.display = "none";
   }
 
-  function setProcessing() {
-    statusText.textContent = "Thinking...";
+  function setReadyToRecord() {
+    setIdle();
+    startBtn.style.display = "inline-block";
+    startBtn.disabled = false;
     listeningControls.style.display = "none";
-    cancelBtn.style.display = "inline-block";
+    cancelBtn.style.display = "none";
+  }
+
+  function setWorkflowPending() {
+    statusText.textContent = "Thinking...";
+    startBtn.style.display = "inline-block";
+    startBtn.disabled = true;
+    listeningControls.style.display = "none";
+    cancelBtn.style.display = "none";
     onboardingDiv.style.display = "none";
+    cancelBtnOnboarding.style.display = "none";
+  }
+
+  /**
+   * @param {string} status
+   */
+  function setWorkflowTerminal(status) {
+    statusText.textContent = status === "completed" ? "completed" : "cancelled";
+    startBtn.style.display = "inline-block";
+    startBtn.disabled = false;
+    listeningControls.style.display = "none";
+    cancelBtn.style.display = "none";
+    cancelBtnOnboarding.style.display = "none";
   }
 
   function setOnboarding() {
@@ -542,6 +594,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ===== INIT =====
-  setIdle();
+  setReadyToRecord();
 
 });

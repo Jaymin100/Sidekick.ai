@@ -140,6 +140,13 @@ body {
   box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
 }
 
+.primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .secondary-btn {
   padding: 12px 24px;
   font-size: 15px;
